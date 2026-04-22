@@ -736,49 +736,31 @@ def get_report_ticket_count_by_date(
 def get_report_ticket_count_by_client(
     date_from: str | None = None, date_to: str | None = None
 ) -> list[dict[str, Any]]:
-    where_sql, params = _build_date_range_filter(date_from, date_to)
-    query = f"""
-        SELECT COALESCE(NULLIF(trim(client_name), ''), 'Unknown Client') AS label, COUNT(*) AS count
-        FROM tickets
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(trim(client_name), ''), 'Unknown Client')
-        ORDER BY count DESC, label ASC;
-    """
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    return _get_grouped_report_counts(
+        group_expr="COALESCE(NULLIF(trim(client_name), ''), 'Unknown Client')",
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 def get_report_ticket_count_by_category(
     date_from: str | None = None, date_to: str | None = None
 ) -> list[dict[str, Any]]:
-    where_sql, params = _build_date_range_filter(date_from, date_to)
-    query = f"""
-        SELECT COALESCE(NULLIF(trim(category), ''), 'Uncategorized') AS label, COUNT(*) AS count
-        FROM tickets
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(trim(category), ''), 'Uncategorized')
-        ORDER BY count DESC, label ASC;
-    """
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    return _get_grouped_report_counts(
+        group_expr="COALESCE(NULLIF(trim(category), ''), 'Uncategorized')",
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 def get_report_ticket_count_by_technician(
     date_from: str | None = None, date_to: str | None = None
 ) -> list[dict[str, Any]]:
-    where_sql, params = _build_date_range_filter(date_from, date_to)
-    query = f"""
-        SELECT COALESCE(NULLIF(trim(assigned_to), ''), 'Unassigned') AS label, COUNT(*) AS count
-        FROM tickets
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(trim(assigned_to), ''), 'Unassigned')
-        ORDER BY count DESC, label ASC;
-    """
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    return _get_grouped_report_counts(
+        group_expr="COALESCE(NULLIF(trim(assigned_to), ''), 'Unassigned')",
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 def get_report_resolved_vs_unresolved(
@@ -809,17 +791,11 @@ def get_report_resolved_vs_unresolved(
 def get_report_priority_distribution(
     date_from: str | None = None, date_to: str | None = None
 ) -> list[dict[str, Any]]:
-    where_sql, params = _build_date_range_filter(date_from, date_to)
-    query = f"""
-        SELECT COALESCE(NULLIF(trim(priority), ''), 'Unspecified') AS label, COUNT(*) AS count
-        FROM tickets
-        {where_sql}
-        GROUP BY COALESCE(NULLIF(trim(priority), ''), 'Unspecified')
-        ORDER BY count DESC, label ASC;
-    """
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    return _get_grouped_report_counts(
+        group_expr="COALESCE(NULLIF(trim(priority), ''), 'Unspecified')",
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 def get_ticket_by_db_id(db_id: int) -> dict[str, Any] | None:
@@ -1501,6 +1477,24 @@ def _build_date_range_filter(date_from: str | None, date_to: str | None) -> tupl
     if not clauses:
         return "", []
     return "WHERE " + " AND ".join(clauses), params
+
+
+def _get_grouped_report_counts(
+    group_expr: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to)
+    query = f"""
+        SELECT {group_expr} AS label, COUNT(*) AS count
+        FROM tickets
+        {where_sql}
+        GROUP BY {group_expr}
+        ORDER BY count DESC, label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _build_ticket_history_rows(

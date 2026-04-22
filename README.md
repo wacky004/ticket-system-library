@@ -1,40 +1,113 @@
-﻿# Ticket Library Desktop (Phase 9)
+﻿# Ticket Library Desktop (Phase 10 Finalization)
 
-Ticket Library Desktop is an offline-first Windows desktop app using Python + PySide6.
+Ticket Library Desktop is an offline-first Windows desktop application for ticket operations.
 
-Phase 9 adds settings, theme persistence, shortcuts, starred/pinned tickets, duplication, unsaved-change protection, and UI polish.
+## Core Design
+- Live active database stays local.
+- OneDrive is used for backup and restore, not as the live SQLite location.
+- Intended for one active computer at a time.
 
-## Phase 9 Highlights
-- Complete Settings module:
-  - app theme (dark/light)
-  - default backup path
-  - auto backup on close
-  - default export folder
-  - ticket ID prefix
-  - company name + display name
-- Settings persist in SQLite (`app_settings`)
-- Keyboard shortcuts:
-  - `Ctrl+N` new ticket
-  - `Ctrl+F` focus ticket search
-  - `Ctrl+S` save in new-ticket and ticket-detail forms
-- Unsaved changes warning:
-  - New Ticket page leave/cancel checks
-  - Ticket Detail dialog close/cancel checks
-- Favorite/starred tickets
-- Pin ticket support
-- Quick duplicate ticket
-- Improved table/actions polish and feedback dialogs
+## Project Structure
+```text
+Ticket Library Desktop/
+|- main.py
+|- requirements.txt
+|- README.md
+|- app/
+|  |- application.py
+|  |- config.py
+|  |- db/
+|  |  `- database.py
+|  |- services/
+|  |  |- backup.py
+|  |  `- exports.py
+|  `- ui/
+|     |- main_window.py
+|     |- pages.py
+|     |- reports.py
+|     |- settings.py
+|     |- backups.py
+|     `- tickets.py
+|- scripts/
+|  `- seed_sample_data.py
+`- tests/
+   |- conftest.py
+   `- test_phase10_core.py
+```
 
-## Run
+## Installation (Windows)
 ```powershell
 cd "C:\Users\Dev1\Desktop\Ticket Library Desktop"
+
+# Recommended Python: 3.11–3.13
 py -3.13 -m venv .venv
 .venv\Scripts\activate
+
 pip install -r requirements.txt
+```
+
+## Run the App
+```powershell
+cd "C:\Users\Dev1\Desktop\Ticket Library Desktop"
+.venv\Scripts\activate
 python main.py
 ```
 
-## Git Save Commands
+## Seed Sample Data
+```powershell
+cd "C:\Users\Dev1\Desktop\Ticket Library Desktop"
+.venv\Scripts\activate
+python scripts\seed_sample_data.py --count 20
+```
+
+## Tests
+```powershell
+cd "C:\Users\Dev1\Desktop\Ticket Library Desktop"
+.venv\Scripts\activate
+pytest -q
+```
+
+Covered basic tests:
+- database initialization
+- ticket insert
+- ticket update
+- attachment linking
+- backup creation
+- restore process
+
+## Backup and Restore
+1. Open **Settings** and configure the OneDrive backup folder.
+2. Validate and save settings.
+3. Open **Backups** page to run manual backup or restore.
+4. Optional: enable auto backup on close.
+
+### OneDrive Safety Note
+- Do not point live SQLite to a OneDrive-synced active DB file.
+- Use backup/restore workflows only.
+- Keep one active computer at a time to avoid conflicts.
+
+## Export and Reporting
+- Export filtered tickets to CSV/Excel from Tickets page.
+- Export selected ticket details to PDF.
+- Use Reports page for date-filtered aggregates.
+
+## Package as EXE (PyInstaller Example)
+Install PyInstaller:
+```powershell
+pip install pyinstaller
+```
+
+Build command example:
+```powershell
+pyinstaller --noconfirm --clean --windowed --name "Ticket Library Desktop" main.py
+```
+
+Optional data-folder bundling example:
+```powershell
+pyinstaller --noconfirm --clean --windowed --name "Ticket Library Desktop" --add-data "app;app" main.py
+```
+
+## Daily Git Save Commands
 ```powershell
 cd "C:\Users\Dev1\Desktop\Ticket Library Desktop"
 git add .
