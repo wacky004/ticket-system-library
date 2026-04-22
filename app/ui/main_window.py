@@ -29,7 +29,7 @@ from app.ui.pages import DashboardPage
 from app.ui.reports import ReportsPage
 from app.ui.settings import SettingsPage
 from app.ui.theme import ThemeMode, build_stylesheet
-from app.ui.tickets import NewTicketPage, TicketsPage
+from app.ui.tickets import NewTicketDialog, NewTicketPage, TicketsPage
 
 
 @dataclass(frozen=True)
@@ -190,10 +190,10 @@ class MainWindow(QMainWindow):
             self.backups_page.refresh_data()
 
     def _open_new_ticket_page(self) -> None:
-        self.stack.setCurrentIndex(self._new_ticket_page_index)
-        self.new_ticket_page.refresh_ticket_preview()
-        for button in self._nav_buttons:
-            button.setChecked(False)
+        dialog = NewTicketDialog(self)
+        dialog.exec()
+        if dialog.saved:
+            self._sync_views()
 
     def _sync_views(self) -> None:
         self.tickets_page.reload_filter_options()

@@ -272,6 +272,9 @@ def build_stylesheet(mode: ThemeMode = ThemeMode.DARK) -> str:
         border-top-right-radius: 10px;
         margin-right: 4px;
         padding: 7px 12px;
+        min-width: 110px;
+        max-width: 220px;
+        text-align: center;
     }}
 
     QTabBar::tab:selected {{

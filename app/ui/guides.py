@@ -39,7 +39,7 @@ from app.db.database import (
     search_guides,
     update_guide,
 )
-from app.ui.components import ReadableContentCard
+from app.ui.components import ReadableContentCard, configure_tab_widget
 from app.ui.tickets import AttachmentPanel
 
 
@@ -139,6 +139,7 @@ class GuideDetailDialog(QDialog):
 
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
+        configure_tab_widget(self.tabs)
         self.form = GuideFormWidget()
         self.attachments_panel = AttachmentPanel("guide", allow_clipboard=True)
 
@@ -215,6 +216,7 @@ class GuideWorkspaceDetail(QWidget):
         h.addWidget(self.meta_label)
 
         self.tabs = QTabWidget()
+        configure_tab_widget(self.tabs)
         self.overview_card = ReadableContentCard("Overview")
         self.installation_card = ReadableContentCard("Installation Steps")
         self.troubleshooting_card = ReadableContentCard("Troubleshooting")

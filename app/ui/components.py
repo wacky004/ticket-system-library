@@ -151,3 +151,12 @@ class EmptyStateWidget(QWidget):
         root.addWidget(title_label)
         root.addWidget(subtitle_label)
         root.addStretch(1)
+
+
+def configure_tab_widget(widget) -> None:
+    """Make tab bars readable and scrollable when labels overflow."""
+    bar = widget.tabBar()
+    bar.setExpanding(False)
+    bar.setUsesScrollButtons(True)
+    bar.setElideMode(Qt.TextElideMode.ElideRight)
+    bar.setMovable(False)

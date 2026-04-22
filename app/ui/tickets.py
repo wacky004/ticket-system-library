@@ -69,7 +69,7 @@ from app.db.database import (
     update_ticket,
 )
 from app.services.exports import export_ticket_to_pdf, export_tickets_to_csv, export_tickets_to_excel
-from app.ui.components import PriorityPill, ReadableContentCard, StatusPill
+from app.ui.components import PriorityPill, ReadableContentCard, StatusPill, configure_tab_widget
 
 
 class TicketFormWidget(QWidget):
@@ -352,6 +352,60 @@ class NewTicketPage(QWidget):
 
     def handle_save_shortcut(self) -> None:
         self._handle_save()
+
+
+class NewTicketDialog(QDialog):
+    """Floating full-detail dialog for new ticket input."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("New Ticket")
+        self.setMinimumSize(980, 760)
+
+        layout = QVBoxLayout(self)
+        title = QLabel("Create New Ticket")
+        title.setObjectName("PageTitle")
+        subtitle = QLabel("Enter full ticket details and save.")
+        subtitle.setObjectName("PageSubtitle")
+        self.form = TicketFormWidget()
+        self.form.set_ticket_preview(generate_next_ticket_id())
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("SecondaryButton")
+        self.save_button = QPushButton("Save Ticket")
+        self.save_button.setObjectName("PrimaryButton")
+        actions.addWidget(self.cancel_button)
+        actions.addWidget(self.save_button)
+
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addWidget(self.form, 1)
+        layout.addLayout(actions)
+
+        self.cancel_button.clicked.connect(self.reject)
+        self.save_button.clicked.connect(self._save)
+        self._saved = False
+
+    def _save(self) -> None:
+        try:
+            ticket_db_id = create_ticket(self.form.get_payload())
+            saved_ticket = get_ticket_by_db_id(ticket_db_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Validation Error", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Failed", f"Unable to save ticket.\n\n{exc}")
+            return
+        label = saved_ticket["ticket_id"] if saved_ticket else str(ticket_db_id)
+        QMessageBox.information(self, "Success", f"Ticket {label} was created.")
+        self._saved = True
+        self.accept()
+
+    @property
+    def saved(self) -> bool:
+        return self._saved
 
 
 class AttachmentListWidget(QListWidget):
@@ -661,6 +715,7 @@ class TicketDetailDialog(QDialog):
         self.meta_label.setObjectName("MetaLabel")
 
         self.tabs = QTabWidget()
+        configure_tab_widget(self.tabs)
         details_tab = QWidget()
         details_layout = QVBoxLayout(details_tab)
         self.form = TicketFormWidget()
@@ -806,6 +861,7 @@ class TicketWorkspaceDetail(QWidget):
         header_layout.addWidget(self.context_label)
 
         self.tabs = QTabWidget()
+        configure_tab_widget(self.tabs)
         self.notes_list = QListWidget()
         details_tab = QWidget()
         details_layout = QVBoxLayout(details_tab)
@@ -1316,8 +1372,10 @@ class TicketsPage(QWidget):
         self.search_input.selectAll()
 
     def _handle_new_ticket(self) -> None:
-        if self._on_request_new_ticket:
-            self._on_request_new_ticket()
+        dialog = NewTicketDialog(self)
+        dialog.exec()
+        if dialog.saved:
+            self._after_data_change()
 
     def open_selected_ticket(self) -> None:
         db_id = self._selected_ticket_db_id()
