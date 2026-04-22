@@ -135,6 +135,17 @@ BEGIN
     SET updated_at = datetime('now')
     WHERE id = NEW.id;
 END;
+
+CREATE INDEX IF NOT EXISTS idx_tickets_ticket_id ON tickets(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_tickets_priority ON tickets(priority);
+CREATE INDEX IF NOT EXISTS idx_tickets_category ON tickets(category);
+CREATE INDEX IF NOT EXISTS idx_tickets_client_name ON tickets(client_name);
+CREATE INDEX IF NOT EXISTS idx_tickets_va_name ON tickets(va_name);
+CREATE INDEX IF NOT EXISTS idx_tickets_assigned_to ON tickets(assigned_to);
+CREATE INDEX IF NOT EXISTS idx_tickets_archived ON tickets(archived);
+CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
+CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket_id ON ticket_attachments(ticket_id);
 """
 
 DEFAULT_CATEGORIES = [
@@ -288,19 +299,147 @@ def generate_next_ticket_id() -> str:
 
 
 def list_tickets(include_archived: bool = True) -> list[dict[str, Any]]:
+    return search_tickets({"include_archived": include_archived})
+
+
+def search_tickets(filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    active_filters = filters or {}
+
     query = """
-        SELECT id, ticket_id, title, client_name, category, subcategory, priority, status,
-               assigned_to, follow_up_date, archived, created_at, updated_at, resolved_at
-        FROM tickets
+        SELECT
+            t.id,
+            t.ticket_id,
+            t.title,
+            t.client_name,
+            t.va_name,
+            t.category,
+            t.subcategory,
+            t.priority,
+            t.status,
+            t.assigned_to,
+            t.tags_text,
+            t.description,
+            t.follow_up_date,
+            t.archived,
+            t.created_at,
+            t.updated_at,
+            t.resolved_at,
+            EXISTS(SELECT 1 FROM ticket_attachments ta WHERE ta.ticket_id = t.id) AS has_attachments
+        FROM tickets t
+        WHERE 1 = 1
     """
-    params: tuple[Any, ...] = ()
-    if not include_archived:
-        query += " WHERE archived = 0"
-    query += " ORDER BY created_at DESC, id DESC;"
+    params: list[Any] = []
+
+    search_text = _normalize(active_filters.get("search_text"))
+    if search_text:
+        like_value = f"%{search_text}%"
+        query += """
+            AND (
+                t.ticket_id LIKE ? COLLATE NOCASE OR
+                t.title LIKE ? COLLATE NOCASE OR
+                t.client_name LIKE ? COLLATE NOCASE OR
+                t.va_name LIKE ? COLLATE NOCASE OR
+                t.category LIKE ? COLLATE NOCASE OR
+                t.priority LIKE ? COLLATE NOCASE OR
+                t.status LIKE ? COLLATE NOCASE OR
+                t.assigned_to LIKE ? COLLATE NOCASE OR
+                t.tags_text LIKE ? COLLATE NOCASE OR
+                t.description LIKE ? COLLATE NOCASE
+            )
+        """
+        params.extend(
+            [
+                like_value,
+                like_value,
+                like_value,
+                like_value,
+                like_value,
+                like_value,
+                like_value,
+                like_value,
+                like_value,
+                like_value,
+            ]
+        )
+
+    status = _normalize(active_filters.get("status"))
+    if status:
+        query += " AND t.status = ?"
+        params.append(status)
+
+    priority = _normalize(active_filters.get("priority"))
+    if priority:
+        query += " AND t.priority = ?"
+        params.append(priority)
+
+    category = _normalize(active_filters.get("category"))
+    if category:
+        query += " AND t.category = ?"
+        params.append(category)
+
+    client_name = _normalize(active_filters.get("client_name"))
+    if client_name:
+        query += " AND t.client_name = ?"
+        params.append(client_name)
+
+    va_name = _normalize(active_filters.get("va_name"))
+    if va_name:
+        query += " AND t.va_name = ?"
+        params.append(va_name)
+
+    date_from = _normalize(active_filters.get("date_from"))
+    if date_from:
+        query += " AND date(t.created_at) >= date(?)"
+        params.append(date_from)
+
+    date_to = _normalize(active_filters.get("date_to"))
+    if date_to:
+        query += " AND date(t.created_at) <= date(?)"
+        params.append(date_to)
+
+    archived_only = bool(active_filters.get("archived_only", False))
+    include_archived = bool(active_filters.get("include_archived", True))
+    if archived_only:
+        query += " AND t.archived = 1"
+    elif not include_archived:
+        query += " AND t.archived = 0"
+
+    if bool(active_filters.get("with_attachments_only", False)):
+        query += " AND EXISTS(SELECT 1 FROM ticket_attachments ta2 WHERE ta2.ticket_id = t.id)"
+
+    query += " ORDER BY t.created_at DESC, t.id DESC;"
 
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_ticket_filter_options() -> dict[str, list[str]]:
+    with get_connection() as conn:
+        client_rows = conn.execute(
+            """
+            SELECT DISTINCT client_name
+            FROM tickets
+            WHERE client_name IS NOT NULL AND trim(client_name) <> ''
+            ORDER BY client_name;
+            """
+        ).fetchall()
+        va_rows = conn.execute(
+            """
+            SELECT DISTINCT va_name
+            FROM tickets
+            WHERE va_name IS NOT NULL AND trim(va_name) <> ''
+            ORDER BY va_name;
+            """
+        ).fetchall()
+
+    return {
+        "statuses": get_default_statuses(),
+        "priorities": get_default_priorities(),
+        "categories": list_categories(),
+        "clients": [str(row["client_name"]) for row in client_rows],
+        "vas": [str(row["va_name"]) for row in va_rows],
+    }
 
 
 def get_ticket_by_db_id(db_id: int) -> dict[str, Any] | None:

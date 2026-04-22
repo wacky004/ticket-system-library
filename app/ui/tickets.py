@@ -1,13 +1,15 @@
-﻿"""Ticket management UI for Phase 2 CRUD features."""
+"""Ticket management UI for Phase 2/3 CRUD and browser features."""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFormLayout,
     QFrame,
@@ -34,10 +36,11 @@ from app.db.database import (
     get_default_priorities,
     get_default_statuses,
     get_ticket_by_db_id,
+    get_ticket_filter_options,
     list_categories,
     list_subcategories,
-    list_tickets,
     reopen_ticket,
+    search_tickets,
     update_ticket,
 )
 
@@ -193,9 +196,13 @@ class TicketFormWidget(QWidget):
         self._reload_subcategories("")
 
         if self.priority_input.count() > 0:
-            self.priority_input.setCurrentText("Medium" if self.priority_input.findText("Medium") >= 0 else self.priority_input.itemText(0))
+            self.priority_input.setCurrentText(
+                "Medium" if self.priority_input.findText("Medium") >= 0 else self.priority_input.itemText(0)
+            )
         if self.status_input.count() > 0:
-            self.status_input.setCurrentText("Open" if self.status_input.findText("Open") >= 0 else self.status_input.itemText(0))
+            self.status_input.setCurrentText(
+                "Open" if self.status_input.findText("Open") >= 0 else self.status_input.itemText(0)
+            )
 
         self.assigned_to_input.clear()
         self.source_input.clear()
@@ -409,20 +416,23 @@ class TicketDetailDialog(QDialog):
 
 
 class TicketsPage(QWidget):
-    """Tickets table page with CRUD actions."""
+    """Tickets browser page with search, filters, sorting, and CRUD actions."""
 
     TABLE_COLUMNS = [
         "ID",
         "Ticket ID",
         "Title",
         "Client",
+        "VA",
         "Category",
-        "Subcategory",
         "Priority",
         "Status",
         "Assigned",
+        "Tags",
         "Archived",
+        "Attachments",
         "Updated",
+        "Created",
     ]
 
     def __init__(
@@ -440,7 +450,7 @@ class TicketsPage(QWidget):
 
         title = QLabel("Tickets")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("Manage, edit, archive, and reopen tickets.")
+        subtitle = QLabel("Browse, search, sort, and manage current or historical tickets.")
         subtitle.setObjectName("PageSubtitle")
 
         controls_card = QFrame()
@@ -451,8 +461,51 @@ class TicketsPage(QWidget):
         controls_layout.setVerticalSpacing(8)
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search tickets (coming in next phase)")
-        self.search_input.setEnabled(False)
+        self.search_input.setPlaceholderText(
+            "Search by ticket ID, title, client, VA, category, priority, status, assigned, tags, or description"
+        )
+
+        self.status_filter = QComboBox()
+        self.priority_filter = QComboBox()
+        self.category_filter = QComboBox()
+        self.client_filter = QComboBox()
+        self.va_filter = QComboBox()
+
+        self.use_date_from_check = QCheckBox("From")
+        self.date_from_input = QDateEdit(QDate.currentDate().addMonths(-1))
+        self.date_from_input.setDisplayFormat("yyyy-MM-dd")
+        self.date_from_input.setCalendarPopup(True)
+        self.date_from_input.setEnabled(False)
+
+        self.use_date_to_check = QCheckBox("To")
+        self.date_to_input = QDateEdit(QDate.currentDate())
+        self.date_to_input.setDisplayFormat("yyyy-MM-dd")
+        self.date_to_input.setCalendarPopup(True)
+        self.date_to_input.setEnabled(False)
+
+        self.archived_only_check = QCheckBox("Archived Only")
+        self.with_attachments_only_check = QCheckBox("With Attachments Only")
+
+        self.quick_open_button = QPushButton("Open")
+        self.quick_in_progress_button = QPushButton("In Progress")
+        self.quick_pending_button = QPushButton("Pending")
+        self.quick_resolved_button = QPushButton("Resolved")
+        self.quick_archived_button = QPushButton("Archived")
+
+        for button in (
+            self.quick_open_button,
+            self.quick_in_progress_button,
+            self.quick_pending_button,
+            self.quick_resolved_button,
+            self.quick_archived_button,
+        ):
+            button.setObjectName("SecondaryButton")
+
+        self.clear_filters_button = QPushButton("Clear Filters")
+        self.clear_filters_button.setObjectName("SecondaryButton")
+
+        self.results_label = QLabel("0 tickets")
+        self.results_label.setObjectName("MetaLabel")
 
         self.new_button = QPushButton("New Ticket")
         self.new_button.setObjectName("PrimaryButton")
@@ -467,13 +520,59 @@ class TicketsPage(QWidget):
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setObjectName("SecondaryButton")
 
-        controls_layout.addWidget(self.search_input, 0, 0, 1, 4)
-        controls_layout.addWidget(self.new_button, 1, 0)
-        controls_layout.addWidget(self.open_button, 1, 1)
-        controls_layout.addWidget(self.archive_button, 1, 2)
-        controls_layout.addWidget(self.reopen_button, 1, 3)
-        controls_layout.addWidget(self.delete_button, 2, 2)
-        controls_layout.addWidget(self.refresh_button, 2, 3)
+        controls_layout.addWidget(self.search_input, 0, 0, 1, 6)
+
+        controls_layout.addWidget(QLabel("Status"), 1, 0)
+        controls_layout.addWidget(self.status_filter, 1, 1)
+        controls_layout.addWidget(QLabel("Priority"), 1, 2)
+        controls_layout.addWidget(self.priority_filter, 1, 3)
+        controls_layout.addWidget(QLabel("Category"), 1, 4)
+        controls_layout.addWidget(self.category_filter, 1, 5)
+
+        controls_layout.addWidget(QLabel("Client"), 2, 0)
+        controls_layout.addWidget(self.client_filter, 2, 1)
+        controls_layout.addWidget(QLabel("VA"), 2, 2)
+        controls_layout.addWidget(self.va_filter, 2, 3)
+        controls_layout.addWidget(self.archived_only_check, 2, 4)
+        controls_layout.addWidget(self.with_attachments_only_check, 2, 5)
+
+        date_from_layout = QHBoxLayout()
+        date_from_layout.setContentsMargins(0, 0, 0, 0)
+        date_from_layout.addWidget(self.use_date_from_check)
+        date_from_layout.addWidget(self.date_from_input)
+
+        date_to_layout = QHBoxLayout()
+        date_to_layout.setContentsMargins(0, 0, 0, 0)
+        date_to_layout.addWidget(self.use_date_to_check)
+        date_to_layout.addWidget(self.date_to_input)
+
+        controls_layout.addLayout(date_from_layout, 3, 0, 1, 2)
+        controls_layout.addLayout(date_to_layout, 3, 2, 1, 2)
+        controls_layout.addWidget(self.clear_filters_button, 3, 4)
+        controls_layout.addWidget(self.results_label, 3, 5)
+
+        quick_layout = QHBoxLayout()
+        quick_layout.setContentsMargins(0, 0, 0, 0)
+        quick_layout.setSpacing(8)
+        quick_layout.addWidget(self.quick_open_button)
+        quick_layout.addWidget(self.quick_in_progress_button)
+        quick_layout.addWidget(self.quick_pending_button)
+        quick_layout.addWidget(self.quick_resolved_button)
+        quick_layout.addWidget(self.quick_archived_button)
+        quick_layout.addStretch(1)
+        controls_layout.addLayout(quick_layout, 4, 0, 1, 6)
+
+        actions_layout = QHBoxLayout()
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+        actions_layout.addWidget(self.new_button)
+        actions_layout.addWidget(self.open_button)
+        actions_layout.addWidget(self.archive_button)
+        actions_layout.addWidget(self.reopen_button)
+        actions_layout.addWidget(self.delete_button)
+        actions_layout.addStretch(1)
+        actions_layout.addWidget(self.refresh_button)
+        controls_layout.addLayout(actions_layout, 5, 0, 1, 6)
 
         self.table = QTableWidget(0, len(self.TABLE_COLUMNS))
         self.table.setObjectName("TicketsTable")
@@ -485,6 +584,7 @@ class TicketsPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSortingEnabled(True)
 
         root.addWidget(title)
         root.addWidget(subtitle)
@@ -497,34 +597,77 @@ class TicketsPage(QWidget):
         self.reopen_button.clicked.connect(self.reopen_selected_ticket)
         self.delete_button.clicked.connect(self.delete_selected_ticket)
         self.refresh_button.clicked.connect(self.reload_table)
+
+        self.search_input.textChanged.connect(lambda _text: self.reload_table())
+        self.status_filter.currentIndexChanged.connect(lambda _index: self.reload_table())
+        self.priority_filter.currentIndexChanged.connect(lambda _index: self.reload_table())
+        self.category_filter.currentIndexChanged.connect(lambda _index: self.reload_table())
+        self.client_filter.currentIndexChanged.connect(lambda _index: self.reload_table())
+        self.va_filter.currentIndexChanged.connect(lambda _index: self.reload_table())
+        self.archived_only_check.stateChanged.connect(lambda _state: self.reload_table())
+        self.with_attachments_only_check.stateChanged.connect(lambda _state: self.reload_table())
+
+        self.use_date_from_check.stateChanged.connect(self._on_date_filter_toggled)
+        self.use_date_to_check.stateChanged.connect(self._on_date_filter_toggled)
+        self.date_from_input.dateChanged.connect(lambda _date: self.reload_table())
+        self.date_to_input.dateChanged.connect(lambda _date: self.reload_table())
+
+        self.clear_filters_button.clicked.connect(self.clear_filters)
+
+        self.quick_open_button.clicked.connect(lambda: self._apply_quick_status("Open"))
+        self.quick_in_progress_button.clicked.connect(lambda: self._apply_quick_status("In Progress"))
+        self.quick_pending_button.clicked.connect(self._apply_quick_pending)
+        self.quick_resolved_button.clicked.connect(lambda: self._apply_quick_status("Resolved"))
+        self.quick_archived_button.clicked.connect(self._apply_quick_archived)
+
         self.table.cellDoubleClicked.connect(lambda _row, _col: self.open_selected_ticket())
 
+        self.reload_filter_options()
         self.reload_table()
+
+    def reload_filter_options(self) -> None:
+        selected = {
+            "status": self.status_filter.currentText(),
+            "priority": self.priority_filter.currentText(),
+            "category": self.category_filter.currentText(),
+            "client": self.client_filter.currentText(),
+            "va": self.va_filter.currentText(),
+        }
+
+        options = get_ticket_filter_options()
+        self._set_combo_items(self.status_filter, options.get("statuses", []), selected["status"])
+        self._set_combo_items(self.priority_filter, options.get("priorities", []), selected["priority"])
+        self._set_combo_items(self.category_filter, options.get("categories", []), selected["category"])
+        self._set_combo_items(self.client_filter, options.get("clients", []), selected["client"])
+        self._set_combo_items(self.va_filter, options.get("vas", []), selected["va"])
 
     def reload_table(self) -> None:
         try:
-            tickets = list_tickets(include_archived=True)
+            tickets = search_tickets(self._collect_filters())
         except Exception as exc:  # pragma: no cover - safety guard
             QMessageBox.critical(self, "Load Failed", f"Unable to load tickets.\n\n{exc}")
             return
 
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
 
         for row_index, ticket in enumerate(tickets):
             self.table.insertRow(row_index)
-
             values = [
                 str(ticket.get("id") or ""),
                 str(ticket.get("ticket_id") or ""),
                 str(ticket.get("title") or ""),
                 str(ticket.get("client_name") or ""),
+                str(ticket.get("va_name") or ""),
                 str(ticket.get("category") or ""),
-                str(ticket.get("subcategory") or ""),
                 str(ticket.get("priority") or ""),
                 str(ticket.get("status") or ""),
                 str(ticket.get("assigned_to") or ""),
+                str(ticket.get("tags_text") or ""),
                 "Yes" if int(ticket.get("archived") or 0) else "No",
+                "Yes" if int(ticket.get("has_attachments") or 0) else "No",
                 str(ticket.get("updated_at") or ""),
+                str(ticket.get("created_at") or ""),
             ]
 
             for col_index, value in enumerate(values):
@@ -533,6 +676,62 @@ class TicketsPage(QWidget):
                 self.table.setItem(row_index, col_index, item)
 
         self.table.resizeColumnsToContents()
+        self.table.setSortingEnabled(True)
+        self.results_label.setText(f"{len(tickets)} tickets")
+
+    def _collect_filters(self) -> dict[str, Any]:
+        date_from = (
+            self.date_from_input.date().toString("yyyy-MM-dd") if self.use_date_from_check.isChecked() else None
+        )
+        date_to = self.date_to_input.date().toString("yyyy-MM-dd") if self.use_date_to_check.isChecked() else None
+
+        return {
+            "search_text": self.search_input.text(),
+            "status": self.status_filter.currentText(),
+            "priority": self.priority_filter.currentText(),
+            "category": self.category_filter.currentText(),
+            "client_name": self.client_filter.currentText(),
+            "va_name": self.va_filter.currentText(),
+            "date_from": date_from,
+            "date_to": date_to,
+            "archived_only": self.archived_only_check.isChecked(),
+            "with_attachments_only": self.with_attachments_only_check.isChecked(),
+            "include_archived": True,
+        }
+
+    def clear_filters(self) -> None:
+        self.search_input.clear()
+        self.status_filter.setCurrentIndex(0)
+        self.priority_filter.setCurrentIndex(0)
+        self.category_filter.setCurrentIndex(0)
+        self.client_filter.setCurrentIndex(0)
+        self.va_filter.setCurrentIndex(0)
+        self.archived_only_check.setChecked(False)
+        self.with_attachments_only_check.setChecked(False)
+        self.use_date_from_check.setChecked(False)
+        self.use_date_to_check.setChecked(False)
+        self.date_from_input.setDate(QDate.currentDate().addMonths(-1))
+        self.date_to_input.setDate(QDate.currentDate())
+        self.reload_table()
+
+    def _on_date_filter_toggled(self) -> None:
+        self.date_from_input.setEnabled(self.use_date_from_check.isChecked())
+        self.date_to_input.setEnabled(self.use_date_to_check.isChecked())
+        self.reload_table()
+
+    def _apply_quick_status(self, status_value: str) -> None:
+        self.archived_only_check.setChecked(False)
+        self._set_or_append_filter_text(self.status_filter, status_value)
+        self.reload_table()
+
+    def _apply_quick_pending(self) -> None:
+        pending_value = "Pending" if self.status_filter.findText("Pending") >= 0 else "Waiting on Client"
+        self._apply_quick_status(pending_value)
+
+    def _apply_quick_archived(self) -> None:
+        self.status_filter.setCurrentIndex(0)
+        self.archived_only_check.setChecked(True)
+        self.reload_table()
 
     def _selected_ticket_db_id(self) -> int | None:
         row = self.table.currentRow()
@@ -564,9 +763,7 @@ class TicketsPage(QWidget):
 
         dialog = TicketDetailDialog(db_id, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.reload_table()
-            if self._on_data_changed:
-                self._on_data_changed()
+            self._after_data_change()
 
     def archive_selected_ticket(self) -> None:
         ticket = self._selected_ticket()
@@ -588,9 +785,7 @@ class TicketsPage(QWidget):
 
         archive_ticket(int(ticket["id"]))
         QMessageBox.information(self, "Success", "Ticket archived.")
-        self.reload_table()
-        if self._on_data_changed:
-            self._on_data_changed()
+        self._after_data_change()
 
     def reopen_selected_ticket(self) -> None:
         ticket = self._selected_ticket()
@@ -612,9 +807,7 @@ class TicketsPage(QWidget):
 
         reopen_ticket(int(ticket["id"]))
         QMessageBox.information(self, "Success", "Ticket reopened.")
-        self.reload_table()
-        if self._on_data_changed:
-            self._on_data_changed()
+        self._after_data_change()
 
     def delete_selected_ticket(self) -> None:
         ticket = self._selected_ticket()
@@ -637,6 +830,33 @@ class TicketsPage(QWidget):
             return
 
         QMessageBox.information(self, "Success", "Ticket deleted.")
+        self._after_data_change()
+
+    def _after_data_change(self) -> None:
+        self.reload_filter_options()
         self.reload_table()
         if self._on_data_changed:
             self._on_data_changed()
+
+    @staticmethod
+    def _set_combo_items(combo: QComboBox, values: list[str], selected: str) -> None:
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("")
+        combo.addItems(values)
+
+        index = combo.findText(selected)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+
+    @staticmethod
+    def _set_or_append_filter_text(combo: QComboBox, value: str) -> None:
+        if not value:
+            combo.setCurrentIndex(0)
+            return
+
+        index = combo.findText(value)
+        if index < 0:
+            combo.addItem(value)
+            index = combo.findText(value)
+        combo.setCurrentIndex(index)

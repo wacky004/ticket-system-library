@@ -1,19 +1,23 @@
-﻿# Ticket Library Desktop (Phase 2)
+﻿# Ticket Library Desktop (Phase 3)
 
 Ticket Library Desktop is an offline-first Windows desktop application built with Python and PySide6.
 
-Phase 2 delivers full ticket CRUD on top of the Phase 1 foundation.
+Phase 3 delivers full ticket CRUD plus ticket browsing/search/filter/sort for historical tickets.
 
 ## Features Implemented
 - Modern desktop shell with sidebar navigation
 - New Ticket form with validation
 - Auto-generated Ticket ID format: `TKT-YYYY-000001`
-- Ticket list table (with search placeholder for next phase)
-- Open/Edit ticket detail dialog
+- Ticket list table with full detail open/edit
 - Delete with confirmation
 - Archive and Reopen flows
 - Automatic timestamps (`created_at`, `updated_at`, `resolved_at` rules)
 - SQLite schema initialization + seed defaults + sample tickets
+- Global ticket search (ticket ID, title, client, VA, category, priority, status, assigned tech, tags, description)
+- Filter panel (date range, status, priority, category, client, VA, archived-only, attachments-only)
+- Quick filters: Open, In Progress, Pending, Resolved, Archived
+- Sortable ticket browser table
+- SQLite indexes for faster ticket browsing/search paths
 
 ## Tech Stack
 - Python 3.11+ (recommended: 3.11-3.13 for current PySide6 wheel compatibility)
@@ -46,7 +50,7 @@ Ticket Library Desktop/
 
 ## Navigation
 - Dashboard (placeholder)
-- Tickets (CRUD table/actions)
+- Tickets (CRUD + browser/search/filter)
 - New Ticket (full form)
 - Reports (placeholder)
 - Backups (placeholder)
