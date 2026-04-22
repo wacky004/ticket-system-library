@@ -102,13 +102,15 @@ def build_stylesheet(mode: ThemeMode = ThemeMode.DARK) -> str:
         padding: 9px 10px;
         background-color: transparent;
         font-weight: 500;
+        icon-size: 18px;
+        padding-left: 12px;
     }}
 
     #NavButton[compact="true"] {{
         text-align: center;
-        padding: 9px 2px;
-        font-size: 9.3pt;
-        font-weight: 700;
+        padding: 8px 0;
+        font-size: 0pt;
+        font-weight: 600;
         min-height: 34px;
     }}
 

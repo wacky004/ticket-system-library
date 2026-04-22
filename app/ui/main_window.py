@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +24,7 @@ from app.db.database import get_app_setting
 from app.services.backup import create_backup, get_auto_backup_on_exit, get_configured_backup_root
 from app.ui.backups import BackupsPage
 from app.ui.guides import GuidesPage
+from app.ui.icons import build_nav_icon
 from app.ui.pages import DashboardPage
 from app.ui.reports import ReportsPage
 from app.ui.settings import SettingsPage
@@ -35,17 +35,16 @@ from app.ui.tickets import NewTicketDialog, NewTicketPage, TicketsPage
 @dataclass(frozen=True)
 class NavItem:
     name: str
-    icon: str
-    compact_label: str
+    icon_key: str
 
 
 NAV_ITEMS = [
-    NavItem("Dashboard", "DB", "DB"),
-    NavItem("Tickets", "TK", "TK"),
-    NavItem("Guides", "KB", "KB"),
-    NavItem("Reports", "RP", "RP"),
-    NavItem("Backups", "BK", "BK"),
-    NavItem("Settings", "ST", "ST"),
+    NavItem("Dashboard", "dashboard"),
+    NavItem("Tickets", "tickets"),
+    NavItem("Guides", "guides"),
+    NavItem("Reports", "reports"),
+    NavItem("Backups", "backups"),
+    NavItem("Settings", "settings"),
 ]
 
 
@@ -113,10 +112,11 @@ class MainWindow(QMainWindow):
 
         self._nav_buttons: list[QPushButton] = []
         for index, item in enumerate(NAV_ITEMS):
-            button = QPushButton(f"{item.icon}  {item.name}")
+            button = QPushButton(item.name)
             button.setObjectName("NavButton")
             button.setCheckable(True)
             button.setToolTip(item.name)
+            button.setIcon(build_nav_icon(item.icon_key))
             button.clicked.connect(lambda _checked, i=index: self._set_page(i))
             self._nav_buttons.append(button)
             layout.addWidget(button)
@@ -162,7 +162,7 @@ class MainWindow(QMainWindow):
             self.toggle_sidebar_button.setText("<")
             for i, item in enumerate(NAV_ITEMS):
                 button = self._nav_buttons[i]
-                button.setText(f"{item.icon}  {item.name}")
+                button.setText(item.name)
                 button.setProperty("compact", False)
                 button.style().unpolish(button)
                 button.style().polish(button)
@@ -174,7 +174,7 @@ class MainWindow(QMainWindow):
             self.toggle_sidebar_button.setText(">")
             for i, item in enumerate(NAV_ITEMS):
                 button = self._nav_buttons[i]
-                button.setText(item.compact_label)
+                button.setText("")
                 button.setProperty("compact", True)
                 button.style().unpolish(button)
                 button.style().polish(button)
