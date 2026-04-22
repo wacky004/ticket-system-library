@@ -12,53 +12,53 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
-    QMessageBox,
 )
 
 from app.config import APP_NAME
 from app.db.database import get_app_setting
+from app.services.backup import create_backup, get_auto_backup_on_exit, get_configured_backup_root
 from app.ui.backups import BackupsPage
 from app.ui.guides import GuidesPage
-from app.ui.pages import DashboardPage, PlaceholderPage
+from app.ui.pages import DashboardPage
 from app.ui.reports import ReportsPage
 from app.ui.settings import SettingsPage
-from app.ui.tickets import NewTicketPage, TicketsPage
-from app.services.backup import create_backup, get_auto_backup_on_exit, get_configured_backup_root
 from app.ui.theme import ThemeMode, build_stylesheet
+from app.ui.tickets import NewTicketPage, TicketsPage
 
 
 @dataclass(frozen=True)
 class NavItem:
     name: str
-    subtitle: str
+    icon: str
 
 
 NAV_ITEMS = [
-    NavItem("Dashboard", "Overview metrics and startup insights will live here."),
-    NavItem("Tickets", "Ticket list, filters, and search will be built in the next phase."),
-    NavItem("Guides", "Knowledge base guides and troubleshooting documentation."),
-    NavItem("New Ticket", "Ticket creation form and validation will be added next."),
-    NavItem("Reports", "Reporting widgets and exports will be added in a later phase."),
-    NavItem("Backups", "Backup tools and restore workflow will be implemented later."),
-    NavItem("Settings", "Theme, profile, and system settings controls are coming soon."),
+    NavItem("Dashboard", "▦"),
+    NavItem("Tickets", "◫"),
+    NavItem("Guides", "◧"),
+    NavItem("Reports", "◷"),
+    NavItem("Backups", "⤓"),
+    NavItem("Settings", "⚙"),
 ]
 
 
 class MainWindow(QMainWindow):
-    """Primary application shell with left navigation and stacked pages."""
+    """Workspace shell with collapsible sidebar and page stack."""
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.setMinimumSize(1100, 700)
+        self.setMinimumSize(1280, 760)
+        self._sidebar_expanded = True
 
         container = QWidget()
-        container.setObjectName("MainContainer")
+        container.setObjectName("MainShell")
         root_layout = QHBoxLayout(container)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
@@ -68,50 +68,61 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self.sidebar)
         root_layout.addWidget(self.stack, 1)
-
         self.setCentralWidget(container)
 
-        self._nav_buttons[0].setChecked(True)
-        self.stack.setCurrentIndex(0)
+        self._set_page(0)
         self._configure_shortcuts()
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(240)
+        sidebar.setFixedWidth(250)
 
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        header = QFrame()
+        header.setObjectName("SidebarHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(4, 4, 4, 8)
+        header_layout.setSpacing(4)
+
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_row.setSpacing(6)
+
+        self.brand_label = QLabel("Ticket Library Desktop")
+        self.brand_label.setObjectName("BrandLabel")
+        self.toggle_sidebar_button = QPushButton("⟨")
+        self.toggle_sidebar_button.setObjectName("SecondaryButton")
+        self.toggle_sidebar_button.setFixedWidth(34)
+        self.toggle_sidebar_button.clicked.connect(self._toggle_sidebar)
+
+        brand_row.addWidget(self.brand_label, 1)
+        brand_row.addWidget(self.toggle_sidebar_button)
 
         company_name = get_app_setting("company_name") or "Ticket Library"
-        display_name = get_app_setting("display_name") or "Desktop"
-        brand = QLabel(company_name)
-        brand.setObjectName("BrandLabel")
+        self.brand_sub_label = QLabel(company_name)
+        self.brand_sub_label.setObjectName("BrandSubLabel")
 
-        version = QLabel(display_name)
-        version.setObjectName("BrandSubLabel")
-
-        layout.addWidget(brand)
-        layout.addWidget(version)
+        header_layout.addLayout(brand_row)
+        header_layout.addWidget(self.brand_sub_label)
+        layout.addWidget(header)
 
         self._nav_buttons: list[QPushButton] = []
         for index, item in enumerate(NAV_ITEMS):
-            button = QPushButton(item.name)
+            button = QPushButton(f"{item.icon}  {item.name}")
             button.setObjectName("NavButton")
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setCheckable(True)
-            button.clicked.connect(lambda checked, i=index: self._set_page(i))
-
+            button.clicked.connect(lambda _checked, i=index: self._set_page(i))
             self._nav_buttons.append(button)
             layout.addWidget(button)
 
         layout.addStretch(1)
-
-        footer = QLabel("Phase 9 Polish")
-        footer.setObjectName("SidebarFooter")
-        layout.addWidget(footer)
-
+        self.footer_label = QLabel("Support Workspace")
+        self.footer_label.setObjectName("SidebarFooter")
+        layout.addWidget(self.footer_label)
         return sidebar
 
     def _build_pages(self) -> QStackedWidget:
@@ -119,40 +130,46 @@ class MainWindow(QMainWindow):
         stack.setObjectName("MainStack")
         stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self.tickets_page = TicketsPage(
-            on_request_new_ticket=lambda: self._set_page(3),
-            on_data_changed=self._sync_ticket_views,
-        )
-        self.new_ticket_page = NewTicketPage(on_ticket_saved=self._sync_ticket_views)
-        self.guides_page = GuidesPage(on_data_changed=self._sync_ticket_views)
         self.dashboard_page = DashboardPage()
+        self.tickets_page = TicketsPage(on_request_new_ticket=self._open_new_ticket_page, on_data_changed=self._sync_views)
+        self.guides_page = GuidesPage(on_data_changed=self._sync_views)
         self.reports_page = ReportsPage()
         self.backups_page = BackupsPage()
         self.settings_page = SettingsPage(on_theme_changed=self._apply_theme)
+        self.new_ticket_page = NewTicketPage(on_ticket_saved=self._sync_views)
 
-        for item in NAV_ITEMS:
-            if item.name == "Dashboard":
-                stack.addWidget(self.dashboard_page)
-            elif item.name == "Tickets":
-                stack.addWidget(self.tickets_page)
-            elif item.name == "Guides":
-                stack.addWidget(self.guides_page)
-            elif item.name == "New Ticket":
-                stack.addWidget(self.new_ticket_page)
-            elif item.name == "Reports":
-                stack.addWidget(self.reports_page)
-            elif item.name == "Backups":
-                stack.addWidget(self.backups_page)
-            elif item.name == "Settings":
-                stack.addWidget(self.settings_page)
-            else:
-                stack.addWidget(PlaceholderPage(item.name, item.subtitle))
-
+        stack.addWidget(self.dashboard_page)
+        stack.addWidget(self.tickets_page)
+        stack.addWidget(self.guides_page)
+        stack.addWidget(self.reports_page)
+        stack.addWidget(self.backups_page)
+        stack.addWidget(self.settings_page)
+        stack.addWidget(self.new_ticket_page)
+        self._new_ticket_page_index = 6
         return stack
+
+    def _toggle_sidebar(self) -> None:
+        self._sidebar_expanded = not self._sidebar_expanded
+        if self._sidebar_expanded:
+            self.sidebar.setFixedWidth(250)
+            self.brand_label.show()
+            self.brand_sub_label.show()
+            self.footer_label.show()
+            self.toggle_sidebar_button.setText("⟨")
+            for i, item in enumerate(NAV_ITEMS):
+                self._nav_buttons[i].setText(f"{item.icon}  {item.name}")
+        else:
+            self.sidebar.setFixedWidth(74)
+            self.brand_label.hide()
+            self.brand_sub_label.hide()
+            self.footer_label.hide()
+            self.toggle_sidebar_button.setText("⟩")
+            for i, item in enumerate(NAV_ITEMS):
+                self._nav_buttons[i].setText(item.icon)
 
     def _set_page(self, index: int) -> None:
         current_index = self.stack.currentIndex()
-        if current_index == 3 and index != 3:
+        if current_index == self._new_ticket_page_index and index != self._new_ticket_page_index:
             if not self.new_ticket_page.confirm_leave():
                 return
 
@@ -160,24 +177,32 @@ class MainWindow(QMainWindow):
         for button_index, button in enumerate(self._nav_buttons):
             button.setChecked(button_index == index)
 
-        if NAV_ITEMS[index].name == "New Ticket":
-            self.new_ticket_page.refresh_ticket_preview()
-        elif NAV_ITEMS[index].name == "Dashboard":
+        current_name = NAV_ITEMS[index].name
+        if current_name == "Dashboard":
             self.dashboard_page.refresh_data()
-        elif NAV_ITEMS[index].name == "Reports":
-            self.reports_page.refresh_data()
-        elif NAV_ITEMS[index].name == "Backups":
-            self.backups_page.refresh_data()
-        elif NAV_ITEMS[index].name == "Guides":
+        elif current_name == "Tickets":
+            self.tickets_page.reload_table()
+        elif current_name == "Guides":
             self.guides_page.reload_table()
+        elif current_name == "Reports":
+            self.reports_page.refresh_data()
+        elif current_name == "Backups":
+            self.backups_page.refresh_data()
 
-    def _sync_ticket_views(self) -> None:
+    def _open_new_ticket_page(self) -> None:
+        self.stack.setCurrentIndex(self._new_ticket_page_index)
+        self.new_ticket_page.refresh_ticket_preview()
+        for button in self._nav_buttons:
+            button.setChecked(False)
+
+    def _sync_views(self) -> None:
+        self.tickets_page.reload_filter_options()
         self.tickets_page.reload_table()
         self.guides_page.reload_table()
-        self.new_ticket_page.refresh_ticket_preview()
         self.dashboard_page.refresh_data()
         self.reports_page.refresh_data()
         self.backups_page.refresh_data()
+        self.new_ticket_page.refresh_ticket_preview()
 
     def _apply_theme(self, mode: str) -> None:
         app = QApplication.instance()
@@ -188,7 +213,7 @@ class MainWindow(QMainWindow):
 
     def _configure_shortcuts(self) -> None:
         shortcut_new = QShortcut(QKeySequence("Ctrl+N"), self)
-        shortcut_new.activated.connect(lambda: self._set_page(3))
+        shortcut_new.activated.connect(self._open_new_ticket_page)
 
         shortcut_find = QShortcut(QKeySequence("Ctrl+F"), self)
         shortcut_find.activated.connect(self._focus_ticket_search)
@@ -201,12 +226,11 @@ class MainWindow(QMainWindow):
         self.tickets_page.focus_search()
 
     def _handle_save_shortcut(self) -> None:
-        current_name = NAV_ITEMS[self.stack.currentIndex()].name
-        if current_name == "New Ticket":
+        if self.stack.currentIndex() == self._new_ticket_page_index:
             self.new_ticket_page.handle_save_shortcut()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if NAV_ITEMS[self.stack.currentIndex()].name == "New Ticket":
+        if self.stack.currentIndex() == self._new_ticket_page_index:
             if not self.new_ticket_page.confirm_leave():
                 event.ignore()
                 return

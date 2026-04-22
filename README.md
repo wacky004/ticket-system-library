@@ -16,6 +16,23 @@ Ticket Library Desktop is an offline-first Windows desktop application for ticke
 - `guide_id` format: `GDE-YYYY-######`.
 - Tickets can link/unlink related guides from ticket detail view.
 
+## Workspace Redesign
+- The desktop UI now uses a modern help-desk workspace pattern:
+  - collapsible global left navigation
+  - Tickets 3-column layout:
+    - views/filters panel
+    - ticket list workspace (table + compact modes)
+    - readable ticket detail/context panel
+  - Guides 3-column layout:
+    - category/difficulty filters
+    - searchable guide list
+    - readable detail tabs with attachments and linked tickets
+- Readability improvements:
+  - long content shown in reusable readable cards
+  - preserved line breaks and paragraph spacing
+  - copy-to-clipboard actions in content cards
+  - cleaner notes/history/attachments viewing flow
+
 ## Project Structure
 ```text
 Ticket Library Desktop/

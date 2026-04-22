@@ -916,6 +916,21 @@ def list_guides_for_ticket(ticket_db_id: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_tickets_for_guide(guide_db_id: int) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.ticket_id, t.title, t.client_name, t.status, t.priority, gl.created_at
+            FROM guide_links gl
+            JOIN tickets t ON t.id = gl.ticket_id
+            WHERE gl.guide_id = ?
+            ORDER BY gl.id DESC;
+            """,
+            (guide_db_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def start_backup_log(backup_name: str, backup_path: str, backup_type: str = "manual") -> int:
     with get_connection() as conn:
         cursor = conn.execute(
