@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE TABLE IF NOT EXISTS ticket_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_id INTEGER NOT NULL,
+    note_type TEXT NOT NULL DEFAULT 'Internal',
+    content TEXT,
     note_text TEXT NOT NULL,
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -153,6 +155,8 @@ CREATE INDEX IF NOT EXISTS idx_tickets_assigned_to ON tickets(assigned_to);
 CREATE INDEX IF NOT EXISTS idx_tickets_archived ON tickets(archived);
 CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
 CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket_id ON ticket_attachments(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_ticket_notes_ticket_id ON ticket_notes(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket_id ON ticket_history(ticket_id);
 """
 
 DEFAULT_CATEGORIES = [
@@ -459,6 +463,64 @@ def get_ticket_by_db_id(db_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def list_ticket_notes(ticket_db_id: int) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                ticket_id,
+                COALESCE(note_type, 'Internal') AS note_type,
+                COALESCE(content, note_text) AS content,
+                created_at
+            FROM ticket_notes
+            WHERE ticket_id = ?
+            ORDER BY id DESC;
+            """,
+            (ticket_db_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_ticket_note(ticket_db_id: int, note_type: str, content: str) -> int:
+    normalized_type = _normalize(note_type) or "Internal"
+    normalized_content = _normalize(content)
+    if not normalized_content:
+        raise ValueError("Note content is required.")
+
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        ticket_exists = conn.execute("SELECT 1 FROM tickets WHERE id = ?;", (ticket_db_id,)).fetchone()
+        if ticket_exists is None:
+            raise ValueError("Ticket not found.")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO ticket_notes (
+                ticket_id, note_type, content, note_text, created_at
+            )
+            VALUES (?, ?, ?, ?, ?);
+            """,
+            (ticket_db_id, normalized_type, normalized_content, normalized_content, created_at),
+        )
+        conn.commit()
+    return int(cursor.lastrowid)
+
+
+def list_ticket_history(ticket_db_id: int) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, ticket_id, field_name, old_value, new_value, changed_at
+            FROM ticket_history
+            WHERE ticket_id = ?
+            ORDER BY id DESC;
+            """,
+            (ticket_db_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def list_ticket_attachments(ticket_db_id: int) -> list[dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -597,13 +659,31 @@ def update_ticket(db_id: int, values: dict[str, Any]) -> None:
     payload = _validate_ticket_payload(values)
 
     with get_connection() as conn:
-        current = conn.execute(
-            "SELECT status, resolved_at FROM tickets WHERE id = ?;", (db_id,)
-        ).fetchone()
+        current = conn.execute("SELECT * FROM tickets WHERE id = ?;", (db_id,)).fetchone()
         if current is None:
             raise ValueError("Ticket not found.")
 
         resolved_at = _derive_resolved_at(payload.get("status"), current["resolved_at"])
+        updated_fields: dict[str, Any] = {
+            "title": payload["title"],
+            "client_name": payload["client_name"],
+            "va_name": payload["va_name"],
+            "category": payload["category"],
+            "subcategory": payload["subcategory"],
+            "priority": payload["priority"],
+            "status": payload["status"],
+            "assigned_to": payload["assigned_to"],
+            "source": payload["source"],
+            "description": payload["description"],
+            "troubleshooting": payload["troubleshooting"],
+            "resolution": payload["resolution"],
+            "next_action": payload["next_action"],
+            "tags_text": payload["tags_text"],
+            "follow_up_date": payload["follow_up_date"],
+            "device_name": payload["device_name"],
+            "software_tools": payload["software_tools"],
+            "resolved_at": resolved_at,
+        }
 
         conn.execute(
             """
@@ -630,27 +710,37 @@ def update_ticket(db_id: int, values: dict[str, Any]) -> None:
             WHERE id = ?;
             """,
             (
-                payload["title"],
-                payload["client_name"],
-                payload["va_name"],
-                payload["category"],
-                payload["subcategory"],
-                payload["priority"],
-                payload["status"],
-                payload["assigned_to"],
-                payload["source"],
-                payload["description"],
-                payload["troubleshooting"],
-                payload["resolution"],
-                payload["next_action"],
-                payload["tags_text"],
-                payload["follow_up_date"],
-                payload["device_name"],
-                payload["software_tools"],
-                resolved_at,
+                updated_fields["title"],
+                updated_fields["client_name"],
+                updated_fields["va_name"],
+                updated_fields["category"],
+                updated_fields["subcategory"],
+                updated_fields["priority"],
+                updated_fields["status"],
+                updated_fields["assigned_to"],
+                updated_fields["source"],
+                updated_fields["description"],
+                updated_fields["troubleshooting"],
+                updated_fields["resolution"],
+                updated_fields["next_action"],
+                updated_fields["tags_text"],
+                updated_fields["follow_up_date"],
+                updated_fields["device_name"],
+                updated_fields["software_tools"],
+                updated_fields["resolved_at"],
                 db_id,
             ),
         )
+
+        history_rows = _build_ticket_history_rows(db_id, dict(current), updated_fields)
+        if history_rows:
+            conn.executemany(
+                """
+                INSERT INTO ticket_history (ticket_id, field_name, old_value, new_value, changed_at)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                history_rows,
+            )
 
         conn.commit()
 
@@ -670,15 +760,35 @@ def delete_ticket(db_id: int) -> None:
 
 def archive_ticket(db_id: int) -> None:
     with get_connection() as conn:
+        row = conn.execute("SELECT archived FROM tickets WHERE id = ?;", (db_id,)).fetchone()
+        if row is None:
+            raise ValueError("Ticket not found.")
+
         conn.execute(
             "UPDATE tickets SET archived = 1, updated_at = datetime('now') WHERE id = ?;",
             (db_id,),
         )
+        if int(row["archived"] or 0) != 1:
+            changed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                """
+                INSERT INTO ticket_history (ticket_id, field_name, old_value, new_value, changed_at)
+                VALUES (?, 'archived', ?, '1', ?);
+                """,
+                (db_id, _stringify(row["archived"]), changed_at),
+            )
         conn.commit()
 
 
 def reopen_ticket(db_id: int) -> None:
     with get_connection() as conn:
+        row = conn.execute(
+            "SELECT archived, status, resolved_at FROM tickets WHERE id = ?;",
+            (db_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Ticket not found.")
+
         conn.execute(
             """
             UPDATE tickets
@@ -690,10 +800,45 @@ def reopen_ticket(db_id: int) -> None:
             """,
             (db_id,),
         )
+
+        history_rows = _build_ticket_history_rows(
+            db_id,
+            dict(row),
+            {"archived": 0, "status": "Open", "resolved_at": None},
+        )
+        if history_rows:
+            conn.executemany(
+                """
+                INSERT INTO ticket_history (ticket_id, field_name, old_value, new_value, changed_at)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                history_rows,
+            )
         conn.commit()
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
+    note_columns = _get_table_columns(conn, "ticket_notes")
+    if "note_type" not in note_columns:
+        conn.execute("ALTER TABLE ticket_notes ADD COLUMN note_type TEXT;")
+    if "content" not in note_columns:
+        conn.execute("ALTER TABLE ticket_notes ADD COLUMN content TEXT;")
+
+    conn.execute(
+        """
+        UPDATE ticket_notes
+        SET note_type = 'Internal'
+        WHERE note_type IS NULL OR trim(note_type) = '';
+        """
+    )
+    conn.execute(
+        """
+        UPDATE ticket_notes
+        SET content = note_text
+        WHERE content IS NULL OR trim(content) = '';
+        """
+    )
+
     attachment_columns = _get_table_columns(conn, "ticket_attachments")
 
     if "filename" not in attachment_columns:
@@ -885,6 +1030,35 @@ def _normalize(value: Any) -> str | None:
 def _sanitize_file_name(value: str) -> str:
     cleaned = "".join(ch for ch in value if ch.isalnum() or ch in {"-", "_"})
     return cleaned[:80] or "image"
+
+
+def _build_ticket_history_rows(
+    ticket_id: int,
+    old_ticket: dict[str, Any],
+    new_fields: dict[str, Any],
+) -> list[tuple[int, str, str | None, str | None, str]]:
+    changed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows: list[tuple[int, str, str | None, str | None, str]] = []
+
+    for field_name, new_value in new_fields.items():
+        old_value = old_ticket.get(field_name)
+        if not _values_differ(old_value, new_value):
+            continue
+        rows.append((ticket_id, field_name, _stringify(old_value), _stringify(new_value), changed_at))
+
+    return rows
+
+
+def _values_differ(old_value: Any, new_value: Any) -> bool:
+    old_text = _stringify(old_value)
+    new_text = _stringify(new_value)
+    return old_text != new_text
+
+
+def _stringify(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _derive_resolved_at(status: str | None, current_resolved_at: Any = None) -> str | None:

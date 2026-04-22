@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from app.db.database import (
     ALLOWED_ATTACHMENT_EXTENSIONS,
+    add_ticket_note,
     add_ticket_attachment,
     archive_ticket,
     create_ticket,
@@ -48,6 +49,8 @@ from app.db.database import (
     get_ticket_by_db_id,
     get_ticket_filter_options,
     list_categories,
+    list_ticket_history,
+    list_ticket_notes,
     list_subcategories,
     list_ticket_attachments,
     remove_ticket_attachment,
@@ -658,6 +661,164 @@ class AttachmentPanel(QWidget):
         QMessageBox.information(self, "Success", "Attachment removed.")
 
 
+class NotesPanel(QWidget):
+    """Internal notes management panel."""
+
+    NOTE_TYPES = ["Internal", "Update", "Follow-up", "Escalation"]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ticket_db_id: int | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
+
+        subtitle = QLabel("Add private/internal notes related to this ticket.")
+        subtitle.setObjectName("PageSubtitle")
+
+        input_row = QHBoxLayout()
+        self.note_type_input = QComboBox()
+        self.note_type_input.addItems(self.NOTE_TYPES)
+        self.note_type_input.setCurrentText("Internal")
+        self.note_content_input = QTextEdit()
+        self.note_content_input.setPlaceholderText("Write note content...")
+        self.note_content_input.setFixedHeight(96)
+        input_row.addWidget(self.note_type_input, 1)
+        input_row.addWidget(self.note_content_input, 4)
+
+        action_row = QHBoxLayout()
+        self.add_button = QPushButton("Add Note")
+        self.add_button.setObjectName("PrimaryButton")
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setObjectName("SecondaryButton")
+        self.count_label = QLabel("0 notes")
+        self.count_label.setObjectName("MetaLabel")
+
+        action_row.addWidget(self.add_button)
+        action_row.addWidget(self.refresh_button)
+        action_row.addStretch(1)
+        action_row.addWidget(self.count_label)
+
+        self.notes_list = QListWidget()
+        self.notes_list.setObjectName("NotesList")
+
+        root.addWidget(subtitle)
+        root.addLayout(input_row)
+        root.addLayout(action_row)
+        root.addWidget(self.notes_list, 1)
+
+        self.add_button.clicked.connect(self.add_note)
+        self.refresh_button.clicked.connect(self.reload)
+
+    def set_ticket(self, ticket_db_id: int) -> None:
+        self.ticket_db_id = ticket_db_id
+        self.reload()
+
+    def add_note(self) -> None:
+        if self.ticket_db_id is None:
+            return
+
+        try:
+            add_ticket_note(
+                self.ticket_db_id,
+                self.note_type_input.currentText(),
+                self.note_content_input.toPlainText(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Validation Error", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Add Note Failed", f"Unable to add note.\n\n{exc}")
+            return
+
+        self.note_content_input.clear()
+        self.reload()
+        QMessageBox.information(self, "Success", "Note added.")
+
+    def reload(self) -> None:
+        self.notes_list.clear()
+        if self.ticket_db_id is None:
+            self.count_label.setText("No ticket selected")
+            return
+
+        notes = list_ticket_notes(self.ticket_db_id)
+        for note in notes:
+            note_type = str(note.get("note_type") or "Internal")
+            created_at = str(note.get("created_at") or "-")
+            content = str(note.get("content") or "")
+            text = f"[{created_at}] {note_type}\n{content}"
+            self.notes_list.addItem(text)
+
+        self.count_label.setText(f"{len(notes)} notes")
+
+
+class HistoryPanel(QWidget):
+    """Audit history display for ticket changes."""
+
+    COLUMNS = ["Timestamp", "Field", "Old Value", "New Value"]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ticket_db_id: int | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
+
+        subtitle = QLabel("Audit trail of ticket edits. Newest changes appear first.")
+        subtitle.setObjectName("PageSubtitle")
+
+        action_row = QHBoxLayout()
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setObjectName("SecondaryButton")
+        self.count_label = QLabel("0 changes")
+        self.count_label.setObjectName("MetaLabel")
+        action_row.addWidget(self.refresh_button)
+        action_row.addStretch(1)
+        action_row.addWidget(self.count_label)
+
+        self.table = QTableWidget(0, len(self.COLUMNS))
+        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        root.addWidget(subtitle)
+        root.addLayout(action_row)
+        root.addWidget(self.table, 1)
+
+        self.refresh_button.clicked.connect(self.reload)
+
+    def set_ticket(self, ticket_db_id: int) -> None:
+        self.ticket_db_id = ticket_db_id
+        self.reload()
+
+    def reload(self) -> None:
+        self.table.setRowCount(0)
+        if self.ticket_db_id is None:
+            self.count_label.setText("No ticket selected")
+            return
+
+        entries = list_ticket_history(self.ticket_db_id)
+        for row_index, entry in enumerate(entries):
+            self.table.insertRow(row_index)
+            values = [
+                str(entry.get("changed_at") or "-"),
+                str(entry.get("field_name") or "-"),
+                str(entry.get("old_value") or ""),
+                str(entry.get("new_value") or ""),
+            ]
+            for col_index, value in enumerate(values):
+                self.table.setItem(row_index, col_index, QTableWidgetItem(value))
+
+        self.table.resizeColumnsToContents()
+        self.count_label.setText(f"{len(entries)} changes")
+
+
 class TicketDetailDialog(QDialog):
     """Dialog for viewing/editing an existing ticket."""
 
@@ -689,8 +850,22 @@ class TicketDetailDialog(QDialog):
         self.attachment_panel = AttachmentPanel()
         attachments_layout.addWidget(self.attachment_panel)
 
+        notes_tab = QWidget()
+        notes_layout = QVBoxLayout(notes_tab)
+        notes_layout.setContentsMargins(8, 8, 8, 8)
+        self.notes_panel = NotesPanel()
+        notes_layout.addWidget(self.notes_panel)
+
+        history_tab = QWidget()
+        history_layout = QVBoxLayout(history_tab)
+        history_layout.setContentsMargins(8, 8, 8, 8)
+        self.history_panel = HistoryPanel()
+        history_layout.addWidget(self.history_panel)
+
         self.tabs.addTab(details_tab, "Details")
         self.tabs.addTab(attachments_tab, "Attachments")
+        self.tabs.addTab(notes_tab, "Notes")
+        self.tabs.addTab(history_tab, "History")
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -721,6 +896,8 @@ class TicketDetailDialog(QDialog):
 
         self.form.load_ticket(ticket)
         self.attachment_panel.set_ticket(self.ticket_db_id)
+        self.notes_panel.set_ticket(self.ticket_db_id)
+        self.history_panel.set_ticket(self.ticket_db_id)
         self._refresh_meta(ticket)
 
     def _refresh_meta(self, ticket: dict[str, Any]) -> None:
