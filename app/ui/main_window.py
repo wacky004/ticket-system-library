@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from app.config import APP_NAME
 from app.db.database import get_app_setting
 from app.ui.backups import BackupsPage
+from app.ui.guides import GuidesPage
 from app.ui.pages import DashboardPage, PlaceholderPage
 from app.ui.reports import ReportsPage
 from app.ui.settings import SettingsPage
@@ -40,6 +41,7 @@ class NavItem:
 NAV_ITEMS = [
     NavItem("Dashboard", "Overview metrics and startup insights will live here."),
     NavItem("Tickets", "Ticket list, filters, and search will be built in the next phase."),
+    NavItem("Guides", "Knowledge base guides and troubleshooting documentation."),
     NavItem("New Ticket", "Ticket creation form and validation will be added next."),
     NavItem("Reports", "Reporting widgets and exports will be added in a later phase."),
     NavItem("Backups", "Backup tools and restore workflow will be implemented later."),
@@ -118,10 +120,11 @@ class MainWindow(QMainWindow):
         stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.tickets_page = TicketsPage(
-            on_request_new_ticket=lambda: self._set_page(2),
+            on_request_new_ticket=lambda: self._set_page(3),
             on_data_changed=self._sync_ticket_views,
         )
         self.new_ticket_page = NewTicketPage(on_ticket_saved=self._sync_ticket_views)
+        self.guides_page = GuidesPage(on_data_changed=self._sync_ticket_views)
         self.dashboard_page = DashboardPage()
         self.reports_page = ReportsPage()
         self.backups_page = BackupsPage()
@@ -132,6 +135,8 @@ class MainWindow(QMainWindow):
                 stack.addWidget(self.dashboard_page)
             elif item.name == "Tickets":
                 stack.addWidget(self.tickets_page)
+            elif item.name == "Guides":
+                stack.addWidget(self.guides_page)
             elif item.name == "New Ticket":
                 stack.addWidget(self.new_ticket_page)
             elif item.name == "Reports":
@@ -147,7 +152,7 @@ class MainWindow(QMainWindow):
 
     def _set_page(self, index: int) -> None:
         current_index = self.stack.currentIndex()
-        if current_index == 2 and index != 2:
+        if current_index == 3 and index != 3:
             if not self.new_ticket_page.confirm_leave():
                 return
 
@@ -163,9 +168,12 @@ class MainWindow(QMainWindow):
             self.reports_page.refresh_data()
         elif NAV_ITEMS[index].name == "Backups":
             self.backups_page.refresh_data()
+        elif NAV_ITEMS[index].name == "Guides":
+            self.guides_page.reload_table()
 
     def _sync_ticket_views(self) -> None:
         self.tickets_page.reload_table()
+        self.guides_page.reload_table()
         self.new_ticket_page.refresh_ticket_preview()
         self.dashboard_page.refresh_data()
         self.reports_page.refresh_data()
@@ -180,7 +188,7 @@ class MainWindow(QMainWindow):
 
     def _configure_shortcuts(self) -> None:
         shortcut_new = QShortcut(QKeySequence("Ctrl+N"), self)
-        shortcut_new.activated.connect(lambda: self._set_page(2))
+        shortcut_new.activated.connect(lambda: self._set_page(3))
 
         shortcut_find = QShortcut(QKeySequence("Ctrl+F"), self)
         shortcut_find.activated.connect(self._focus_ticket_search)

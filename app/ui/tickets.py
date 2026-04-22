@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QDate, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QDate, QSize, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -38,7 +38,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.db.database import (
-    ALLOWED_ATTACHMENT_EXTENSIONS,
+    ALLOWED_FILE_ATTACHMENT_EXTENSIONS,
+    add_guide_attachment,
+    add_note_attachment,
+    add_attachment,
+    list_attachments,
     add_ticket_note,
     add_ticket_attachment,
     archive_ticket,
@@ -57,9 +61,14 @@ from app.db.database import (
     list_ticket_notes,
     list_subcategories,
     list_ticket_attachments,
+    list_note_attachments,
     remove_ticket_attachment,
+    link_guide_to_ticket,
+    list_guides_for_ticket,
+    search_guides,
     set_ticket_pinned,
     set_ticket_starred,
+    unlink_guide_from_ticket,
     reopen_ticket,
     search_tickets,
     update_ticket,
@@ -473,23 +482,30 @@ class AttachmentPreviewDialog(QDialog):
 
 
 class AttachmentPanel(QWidget):
-    """Attachment management tab for a ticket."""
+    """Attachment management panel for tickets, notes, and guides."""
 
-    def __init__(self) -> None:
+    _PARENT_LABELS = {"ticket": "ticket", "note": "note", "guide": "guide"}
+
+    def __init__(self, parent_type: str, allow_clipboard: bool = True) -> None:
         super().__init__()
-        self.ticket_db_id: int | None = None
+        if parent_type not in {"ticket", "note", "guide"}:
+            raise ValueError("Unsupported parent type for attachments.")
+
+        self.parent_type = parent_type
+        self.parent_db_id: int | None = None
+        self.allow_clipboard = allow_clipboard
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(10)
 
         subtitle = QLabel(
-            "Attach PNG, JPG, JPEG, or WEBP images. You can add multiple files, drag-drop images, or paste from clipboard."
+            "Attach PNG/JPG/JPEG/WEBP/PDF/DOCX/XLSX/TXT/ZIP files. Drag-and-drop is supported."
         )
         subtitle.setObjectName("PageSubtitle")
 
         self.note_input = QLineEdit()
-        self.note_input.setPlaceholderText("Optional note/label for newly added images")
+        self.note_input.setPlaceholderText("Optional note/label for newly added files")
 
         self.list_widget = AttachmentListWidget()
         self.list_widget.setObjectName("AttachmentList")
@@ -497,12 +513,14 @@ class AttachmentPanel(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(8)
 
-        self.add_button = QPushButton("Add Images")
+        self.add_button = QPushButton("Add Files")
         self.add_button.setObjectName("PrimaryButton")
         self.paste_button = QPushButton("Paste Image")
         self.paste_button.setObjectName("SecondaryButton")
-        self.preview_button = QPushButton("Open Preview")
-        self.preview_button.setObjectName("SecondaryButton")
+        self.open_button = QPushButton("Open File")
+        self.open_button.setObjectName("SecondaryButton")
+        self.reveal_button = QPushButton("Reveal Folder")
+        self.reveal_button.setObjectName("SecondaryButton")
         self.remove_button = QPushButton("Remove")
         self.remove_button.setObjectName("DangerButton")
         self.refresh_button = QPushButton("Refresh")
@@ -510,7 +528,8 @@ class AttachmentPanel(QWidget):
 
         actions.addWidget(self.add_button)
         actions.addWidget(self.paste_button)
-        actions.addWidget(self.preview_button)
+        actions.addWidget(self.open_button)
+        actions.addWidget(self.reveal_button)
         actions.addWidget(self.remove_button)
         actions.addStretch(1)
         actions.addWidget(self.refresh_button)
@@ -524,26 +543,33 @@ class AttachmentPanel(QWidget):
         root.addWidget(self.list_widget, 1)
         root.addWidget(self.status_label)
 
-        self.add_button.clicked.connect(self.add_images_via_dialog)
+        self.add_button.clicked.connect(self.add_files_via_dialog)
         self.paste_button.clicked.connect(self.add_image_from_clipboard)
-        self.preview_button.clicked.connect(self.open_selected_attachment)
+        self.open_button.clicked.connect(self.open_selected_attachment)
+        self.reveal_button.clicked.connect(self.reveal_selected_attachment)
         self.remove_button.clicked.connect(self.remove_selected_attachment)
         self.refresh_button.clicked.connect(self.reload)
         self.list_widget.itemDoubleClicked.connect(lambda _item: self.open_selected_attachment())
         self.list_widget.files_dropped.connect(self._add_files)
 
-    def set_ticket(self, ticket_db_id: int) -> None:
-        self.ticket_db_id = ticket_db_id
+        self.paste_button.setVisible(self.allow_clipboard)
+
+    def set_parent_record(self, parent_db_id: int | None) -> None:
+        self.parent_db_id = parent_db_id
         self.reload()
+
+    def set_ticket(self, ticket_db_id: int) -> None:
+        self.set_parent_record(ticket_db_id)
 
     def reload(self) -> None:
         self.list_widget.clear()
 
-        if self.ticket_db_id is None:
-            self.status_label.setText("No ticket selected")
+        if self.parent_db_id is None:
+            label = self._PARENT_LABELS[self.parent_type]
+            self.status_label.setText(f"No {label} selected")
             return
 
-        attachments = list_ticket_attachments(self.ticket_db_id)
+        attachments = list_attachments(self.parent_type, self.parent_db_id)
         for attachment in attachments:
             self._add_attachment_item(attachment)
         self.status_label.setText(f"{len(attachments)} attachments")
@@ -559,18 +585,15 @@ class AttachmentPanel(QWidget):
             label_lines.append(note)
         if added_at:
             label_lines.append(added_at)
-        label = "\n".join(label_lines)
 
-        item = QListWidgetItem(label)
+        item = QListWidgetItem("\n".join(label_lines))
         item.setData(Qt.ItemDataRole.UserRole, attachment)
         item.setToolTip(str(file_path))
-
-        icon_pixmap = self._build_thumbnail(file_path)
-        item.setIcon(QIcon(icon_pixmap))
+        item.setIcon(QIcon(self._build_thumbnail(file_path)))
         self.list_widget.addItem(item)
 
     def _build_thumbnail(self, file_path: Path) -> QPixmap:
-        if file_path.exists():
+        if file_path.exists() and file_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
             image = QPixmap(str(file_path))
             if not image.isNull():
                 return image.scaled(
@@ -584,18 +607,18 @@ class AttachmentPanel(QWidget):
         placeholder.fill(Qt.GlobalColor.darkGray)
         return placeholder
 
-    def add_images_via_dialog(self) -> None:
-        if self.ticket_db_id is None:
+    def add_files_via_dialog(self) -> None:
+        if self.parent_db_id is None:
             return
 
-        pattern = "Images (*.png *.jpg *.jpeg *.webp)"
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select images", "", pattern)
+        pattern = "Supported Files (*.png *.jpg *.jpeg *.webp *.pdf *.docx *.xlsx *.txt *.zip)"
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select attachments", "", pattern)
         if not file_paths:
             return
         self._add_files(file_paths)
 
     def _add_files(self, file_paths: list[str]) -> None:
-        if self.ticket_db_id is None:
+        if self.parent_db_id is None:
             return
 
         note = self.note_input.text().strip() or None
@@ -603,12 +626,11 @@ class AttachmentPanel(QWidget):
         errors: list[str] = []
         for path in file_paths:
             source = Path(path)
-            if source.suffix.lower() not in ALLOWED_ATTACHMENT_EXTENSIONS:
+            if source.suffix.lower() not in ALLOWED_FILE_ATTACHMENT_EXTENSIONS:
                 errors.append(f"{source.name}: unsupported format")
                 continue
-
             try:
-                add_ticket_attachment(self.ticket_db_id, source, note)
+                add_attachment(self.parent_type, self.parent_db_id, source, note)
                 added_count += 1
             except Exception as exc:
                 errors.append(f"{source.name}: {exc}")
@@ -620,7 +642,7 @@ class AttachmentPanel(QWidget):
             QMessageBox.warning(self, "Some Files Skipped", "\n".join(errors))
 
     def add_image_from_clipboard(self) -> None:
-        if self.ticket_db_id is None:
+        if self.parent_db_id is None:
             return
 
         clipboard = QApplication.clipboard()
@@ -635,7 +657,7 @@ class AttachmentPanel(QWidget):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
                 temp_path = Path(tmp.name)
             image.save(str(temp_path), "PNG")
-            add_ticket_attachment(self.ticket_db_id, temp_path, note)
+            add_attachment(self.parent_type, self.parent_db_id, temp_path, note)
         except Exception as exc:
             QMessageBox.critical(self, "Paste Failed", f"Unable to attach clipboard image.\n\n{exc}")
             return
@@ -664,8 +686,30 @@ class AttachmentPanel(QWidget):
             QMessageBox.warning(self, "Missing File", "Attachment file is missing from disk.")
             return
 
-        dialog = AttachmentPreviewDialog(attachment, self)
-        dialog.exec()
+        if file_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+            dialog = AttachmentPreviewDialog(attachment, self)
+            dialog.exec()
+            return
+
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(file_path)))
+        if not opened:
+            QMessageBox.warning(self, "Open Failed", "Could not open this file on the current system.")
+
+    def reveal_selected_attachment(self) -> None:
+        attachment = self.selected_attachment()
+        if attachment is None:
+            QMessageBox.information(self, "No Selection", "Select an attachment first.")
+            return
+
+        file_path = Path(str(attachment.get("file_path") or ""))
+        folder = file_path.parent
+        if not folder.exists():
+            QMessageBox.warning(self, "Missing Folder", "Attachment folder does not exist.")
+            return
+
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        if not opened:
+            QMessageBox.warning(self, "Open Failed", "Could not open containing folder.")
 
     def remove_selected_attachment(self) -> None:
         attachment = self.selected_attachment()
@@ -700,6 +744,7 @@ class NotesPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.ticket_db_id: int | None = None
+        self.selected_note_db_id: int | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -731,16 +776,23 @@ class NotesPanel(QWidget):
         action_row.addStretch(1)
         action_row.addWidget(self.count_label)
 
+        body_split = QHBoxLayout()
+        body_split.setSpacing(10)
+
         self.notes_list = QListWidget()
         self.notes_list.setObjectName("NotesList")
+        self.note_attachments_panel = AttachmentPanel("note", allow_clipboard=True)
 
         root.addWidget(subtitle)
         root.addLayout(input_row)
         root.addLayout(action_row)
-        root.addWidget(self.notes_list, 1)
+        body_split.addWidget(self.notes_list, 2)
+        body_split.addWidget(self.note_attachments_panel, 3)
+        root.addLayout(body_split, 1)
 
         self.add_button.clicked.connect(self.add_note)
         self.refresh_button.clicked.connect(self.reload)
+        self.notes_list.currentRowChanged.connect(self._on_note_selection_changed)
 
     def set_ticket(self, ticket_db_id: int) -> None:
         self.ticket_db_id = ticket_db_id
@@ -751,7 +803,7 @@ class NotesPanel(QWidget):
             return
 
         try:
-            add_ticket_note(
+            note_db_id = add_ticket_note(
                 self.ticket_db_id,
                 self.note_type_input.currentText(),
                 self.note_content_input.toPlainText(),
@@ -765,10 +817,13 @@ class NotesPanel(QWidget):
 
         self.note_content_input.clear()
         self.reload()
+        self._select_note(note_db_id)
         QMessageBox.information(self, "Success", "Note added.")
 
     def reload(self) -> None:
         self.notes_list.clear()
+        self.selected_note_db_id = None
+        self.note_attachments_panel.set_parent_record(None)
         if self.ticket_db_id is None:
             self.count_label.setText("No ticket selected")
             return
@@ -779,9 +834,39 @@ class NotesPanel(QWidget):
             created_at = str(note.get("created_at") or "-")
             content = str(note.get("content") or "")
             text = f"[{created_at}] {note_type}\n{content}"
-            self.notes_list.addItem(text)
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, int(note["id"]))
+            self.notes_list.addItem(item)
 
         self.count_label.setText(f"{len(notes)} notes")
+        if notes:
+            self.notes_list.setCurrentRow(0)
+
+    def _on_note_selection_changed(self, row: int) -> None:
+        if row < 0:
+            self.selected_note_db_id = None
+            self.note_attachments_panel.set_parent_record(None)
+            return
+
+        item = self.notes_list.item(row)
+        if item is None:
+            self.selected_note_db_id = None
+            self.note_attachments_panel.set_parent_record(None)
+            return
+
+        note_db_id = item.data(Qt.ItemDataRole.UserRole)
+        self.selected_note_db_id = int(note_db_id) if note_db_id is not None else None
+        self.note_attachments_panel.set_parent_record(self.selected_note_db_id)
+
+    def _select_note(self, note_db_id: int) -> None:
+        for row in range(self.notes_list.count()):
+            item = self.notes_list.item(row)
+            if item is None:
+                continue
+            value = item.data(Qt.ItemDataRole.UserRole)
+            if value is not None and int(value) == note_db_id:
+                self.notes_list.setCurrentRow(row)
+                return
 
 
 class HistoryPanel(QWidget):
@@ -850,6 +935,179 @@ class HistoryPanel(QWidget):
         self.count_label.setText(f"{len(entries)} changes")
 
 
+class RelatedGuidesPanel(QWidget):
+    """Manage guide links for a specific ticket."""
+
+    AVAILABLE_COLUMNS = ["ID", "Guide ID", "Title", "Category", "Difficulty", "Archived"]
+    LINKED_COLUMNS = ["ID", "Guide ID", "Title", "Category", "Difficulty", "Linked At", "Archived"]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ticket_db_id: int | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
+
+        subtitle = QLabel("Search guides and link them to this ticket.")
+        subtitle.setObjectName("PageSubtitle")
+
+        search_row = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search guides by id, title, category, tags, or steps...")
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setObjectName("SecondaryButton")
+        search_row.addWidget(self.search_input, 1)
+        search_row.addWidget(self.refresh_button)
+
+        tables_row = QHBoxLayout()
+        tables_row.setSpacing(10)
+
+        available_card = QFrame()
+        available_card.setObjectName("Card")
+        available_layout = QVBoxLayout(available_card)
+        available_layout.setContentsMargins(8, 8, 8, 8)
+        available_layout.setSpacing(8)
+        available_layout.addWidget(QLabel("Available Guides"))
+        self.available_table = QTableWidget(0, len(self.AVAILABLE_COLUMNS))
+        self.available_table.setHorizontalHeaderLabels(self.AVAILABLE_COLUMNS)
+        self.available_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.available_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.available_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.available_table.setAlternatingRowColors(True)
+        self.available_table.verticalHeader().setVisible(False)
+        self.available_table.horizontalHeader().setStretchLastSection(True)
+        available_layout.addWidget(self.available_table, 1)
+
+        linked_card = QFrame()
+        linked_card.setObjectName("Card")
+        linked_layout = QVBoxLayout(linked_card)
+        linked_layout.setContentsMargins(8, 8, 8, 8)
+        linked_layout.setSpacing(8)
+        linked_layout.addWidget(QLabel("Linked Guides"))
+        self.linked_table = QTableWidget(0, len(self.LINKED_COLUMNS))
+        self.linked_table.setHorizontalHeaderLabels(self.LINKED_COLUMNS)
+        self.linked_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.linked_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.linked_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.linked_table.setAlternatingRowColors(True)
+        self.linked_table.verticalHeader().setVisible(False)
+        self.linked_table.horizontalHeader().setStretchLastSection(True)
+        linked_layout.addWidget(self.linked_table, 1)
+
+        controls_col = QVBoxLayout()
+        controls_col.setSpacing(8)
+        controls_col.addStretch(1)
+        self.link_button = QPushButton("Link >>")
+        self.link_button.setObjectName("PrimaryButton")
+        self.unlink_button = QPushButton("<< Unlink")
+        self.unlink_button.setObjectName("DangerButton")
+        controls_col.addWidget(self.link_button)
+        controls_col.addWidget(self.unlink_button)
+        controls_col.addStretch(1)
+
+        tables_row.addWidget(available_card, 5)
+        tables_row.addLayout(controls_col, 1)
+        tables_row.addWidget(linked_card, 5)
+
+        self.count_label = QLabel("0 linked guides")
+        self.count_label.setObjectName("MetaLabel")
+
+        root.addWidget(subtitle)
+        root.addLayout(search_row)
+        root.addLayout(tables_row, 1)
+        root.addWidget(self.count_label)
+
+        self.search_input.textChanged.connect(lambda _text: self.reload())
+        self.refresh_button.clicked.connect(self.reload)
+        self.link_button.clicked.connect(self._link_selected)
+        self.unlink_button.clicked.connect(self._unlink_selected)
+
+    def set_ticket(self, ticket_db_id: int | None) -> None:
+        self.ticket_db_id = ticket_db_id
+        self.reload()
+
+    def reload(self) -> None:
+        self.available_table.setRowCount(0)
+        self.linked_table.setRowCount(0)
+        if self.ticket_db_id is None:
+            self.count_label.setText("No ticket selected")
+            return
+
+        linked_rows = list_guides_for_ticket(self.ticket_db_id)
+        linked_ids = {int(row["id"]) for row in linked_rows}
+        self._fill_table(
+            self.linked_table,
+            linked_rows,
+            self.LINKED_COLUMNS,
+            ["id", "guide_id", "title", "category", "difficulty", "created_at", "archived"],
+        )
+
+        available_rows = search_guides(self.search_input.text(), include_archived=True)
+        filtered = [row for row in available_rows if int(row["id"]) not in linked_ids]
+        self._fill_table(
+            self.available_table,
+            filtered,
+            self.AVAILABLE_COLUMNS,
+            ["id", "guide_id", "title", "category", "difficulty", "archived"],
+        )
+
+        self.available_table.resizeColumnsToContents()
+        self.linked_table.resizeColumnsToContents()
+        self.count_label.setText(f"{len(linked_rows)} linked guides")
+
+    def _link_selected(self) -> None:
+        if self.ticket_db_id is None:
+            return
+        guide_id = self._selected_row_id(self.available_table)
+        if guide_id is None:
+            QMessageBox.information(self, "No Selection", "Select a guide from Available Guides.")
+            return
+        link_guide_to_ticket(self.ticket_db_id, guide_id)
+        self.reload()
+        QMessageBox.information(self, "Linked", "Guide linked to ticket.")
+
+    def _unlink_selected(self) -> None:
+        if self.ticket_db_id is None:
+            return
+        guide_id = self._selected_row_id(self.linked_table)
+        if guide_id is None:
+            QMessageBox.information(self, "No Selection", "Select a linked guide first.")
+            return
+        unlink_guide_from_ticket(self.ticket_db_id, guide_id)
+        self.reload()
+        QMessageBox.information(self, "Unlinked", "Guide removed from ticket.")
+
+    @staticmethod
+    def _selected_row_id(table: QTableWidget) -> int | None:
+        row = table.currentRow()
+        if row < 0:
+            return None
+        item = table.item(row, 0)
+        if item is None:
+            return None
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return int(value) if value is not None else None
+
+    @staticmethod
+    def _fill_table(
+        table: QTableWidget,
+        rows: list[dict[str, Any]],
+        columns: list[str],
+        keys: list[str],
+    ) -> None:
+        table.setRowCount(0)
+        for row_index, row in enumerate(rows):
+            table.insertRow(row_index)
+            for col_index, key in enumerate(keys):
+                value: Any = row.get(key)
+                if key == "archived":
+                    value = "Yes" if int(value or 0) else "No"
+                item = QTableWidgetItem(str(value or ""))
+                item.setData(Qt.ItemDataRole.UserRole, int(row["id"]))
+                table.setItem(row_index, col_index, item)
+
+
 class TicketDetailDialog(QDialog):
     """Dialog for viewing/editing an existing ticket."""
 
@@ -878,7 +1136,7 @@ class TicketDetailDialog(QDialog):
         attachments_tab = QWidget()
         attachments_layout = QVBoxLayout(attachments_tab)
         attachments_layout.setContentsMargins(8, 8, 8, 8)
-        self.attachment_panel = AttachmentPanel()
+        self.attachment_panel = AttachmentPanel("ticket", allow_clipboard=True)
         attachments_layout.addWidget(self.attachment_panel)
 
         notes_tab = QWidget()
@@ -893,10 +1151,17 @@ class TicketDetailDialog(QDialog):
         self.history_panel = HistoryPanel()
         history_layout.addWidget(self.history_panel)
 
+        guides_tab = QWidget()
+        guides_layout = QVBoxLayout(guides_tab)
+        guides_layout.setContentsMargins(8, 8, 8, 8)
+        self.related_guides_panel = RelatedGuidesPanel()
+        guides_layout.addWidget(self.related_guides_panel)
+
         self.tabs.addTab(details_tab, "Details")
         self.tabs.addTab(attachments_tab, "Attachments")
         self.tabs.addTab(notes_tab, "Notes")
         self.tabs.addTab(history_tab, "History")
+        self.tabs.addTab(guides_tab, "Related Guides")
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -929,9 +1194,10 @@ class TicketDetailDialog(QDialog):
             return
 
         self.form.load_ticket(ticket)
-        self.attachment_panel.set_ticket(self.ticket_db_id)
+        self.attachment_panel.set_parent_record(self.ticket_db_id)
         self.notes_panel.set_ticket(self.ticket_db_id)
         self.history_panel.set_ticket(self.ticket_db_id)
+        self.related_guides_panel.set_ticket(self.ticket_db_id)
         self._refresh_meta(ticket)
 
     def _refresh_meta(self, ticket: dict[str, Any]) -> None:

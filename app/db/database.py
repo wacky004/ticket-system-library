@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS ticket_notes (
 
 CREATE TABLE IF NOT EXISTS ticket_attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticket_id INTEGER NOT NULL,
+    ticket_id INTEGER,
+    parent_type TEXT,
+    parent_id INTEGER,
     file_name TEXT NOT NULL,
     filename TEXT,
     file_path TEXT NOT NULL,
@@ -66,8 +68,37 @@ CREATE TABLE IF NOT EXISTS ticket_attachments (
     mime_type TEXT,
     file_size INTEGER,
     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-    added_at TEXT,
-    FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+    added_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS guides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guide_id TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    category TEXT,
+    subcategory TEXT,
+    difficulty TEXT,
+    summary TEXT,
+    problem_description TEXT,
+    installation_steps TEXT,
+    troubleshooting_steps TEXT,
+    solution_steps TEXT,
+    notes TEXT,
+    tags_text TEXT,
+    related_software TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS guide_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    guide_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(ticket_id, guide_id),
+    FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+    FOREIGN KEY (guide_id) REFERENCES guides(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS ticket_history (
@@ -147,6 +178,16 @@ BEGIN
     WHERE id = NEW.id;
 END;
 
+CREATE TRIGGER IF NOT EXISTS trg_guides_updated_at
+AFTER UPDATE ON guides
+FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE guides
+    SET updated_at = datetime('now')
+    WHERE id = NEW.id;
+END;
+
 CREATE INDEX IF NOT EXISTS idx_tickets_ticket_id ON tickets(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_priority ON tickets(priority);
@@ -158,8 +199,15 @@ CREATE INDEX IF NOT EXISTS idx_tickets_archived ON tickets(archived);
 CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
 CREATE INDEX IF NOT EXISTS idx_tickets_follow_up_date ON tickets(follow_up_date);
 CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket_id ON ticket_attachments(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_ticket_attachments_parent ON ticket_attachments(parent_type, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_notes_ticket_id ON ticket_notes(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket_id ON ticket_history(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_guides_guide_id ON guides(guide_id);
+CREATE INDEX IF NOT EXISTS idx_guides_title ON guides(title);
+CREATE INDEX IF NOT EXISTS idx_guides_category ON guides(category);
+CREATE INDEX IF NOT EXISTS idx_guides_archived ON guides(archived);
+CREATE INDEX IF NOT EXISTS idx_guide_links_ticket_id ON guide_links(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_guide_links_guide_id ON guide_links(guide_id);
 """
 
 DEFAULT_CATEGORIES = [
@@ -191,6 +239,17 @@ DEFAULT_SETTINGS = [
 ]
 
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_FILE_ATTACHMENT_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".pdf",
+    ".docx",
+    ".xlsx",
+    ".txt",
+    ".zip",
+}
 
 SAMPLE_TICKETS = [
     {
@@ -357,7 +416,11 @@ def search_tickets(filters: dict[str, Any] | None = None) -> list[dict[str, Any]
             t.created_at,
             t.updated_at,
             t.resolved_at,
-            EXISTS(SELECT 1 FROM ticket_attachments ta WHERE ta.ticket_id = t.id) AS has_attachments
+            EXISTS(
+                SELECT 1
+                FROM ticket_attachments ta
+                WHERE ta.parent_type = 'ticket' AND ta.parent_id = t.id
+            ) AS has_attachments
         FROM tickets t
         WHERE 1 = 1
     """
@@ -438,7 +501,7 @@ def search_tickets(filters: dict[str, Any] | None = None) -> list[dict[str, Any]
         query += " AND t.archived = 0"
 
     if bool(active_filters.get("with_attachments_only", False)):
-        query += " AND EXISTS(SELECT 1 FROM ticket_attachments ta2 WHERE ta2.ticket_id = t.id)"
+        query += " AND EXISTS(SELECT 1 FROM ticket_attachments ta2 WHERE ta2.parent_type = 'ticket' AND ta2.parent_id = t.id)"
 
     query += " ORDER BY t.pinned DESC, t.created_at DESC, t.id DESC;"
 
@@ -521,6 +584,7 @@ def set_app_setting(setting_key: str, setting_value: str, setting_type: str = "s
 def get_dashboard_summary() -> dict[str, int]:
     with get_connection() as conn:
         total = int(conn.execute("SELECT COUNT(*) AS count FROM tickets;").fetchone()["count"])
+        guides_total = int(conn.execute("SELECT COUNT(*) AS count FROM guides WHERE archived = 0;").fetchone()["count"])
         open_count = int(
             conn.execute("SELECT COUNT(*) AS count FROM tickets WHERE status = 'Open' AND archived = 0;").fetchone()[
                 "count"
@@ -551,6 +615,7 @@ def get_dashboard_summary() -> dict[str, int]:
 
     return {
         "total": total,
+        "guides": guides_total,
         "open": open_count,
         "in_progress": in_progress_count,
         "pending": pending_count,
@@ -565,6 +630,21 @@ def list_recent_tickets(limit: int = 8) -> list[dict[str, Any]]:
             """
             SELECT ticket_id, title, client_name, status, priority, updated_at
             FROM tickets
+            ORDER BY datetime(updated_at) DESC, id DESC
+            LIMIT ?;
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_recent_guides(limit: int = 8) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT guide_id, title, category, difficulty, updated_at
+            FROM guides
+            WHERE archived = 0
             ORDER BY datetime(updated_at) DESC, id DESC
             LIMIT ?;
             """,
@@ -642,6 +722,198 @@ def get_last_backup_status() -> dict[str, Any]:
         "status": row["status"] or "unknown",
         "timestamp": completed or "-",
     }
+
+
+def generate_next_guide_id() -> str:
+    with get_connection() as conn:
+        return _generate_next_guide_id(conn)
+
+
+def create_guide(values: dict[str, Any]) -> int:
+    payload = _validate_guide_payload(values)
+    with get_connection() as conn:
+        guide_id = _generate_next_guide_id(conn)
+        cursor = conn.execute(
+            """
+            INSERT INTO guides (
+                guide_id, title, category, subcategory, difficulty, summary, problem_description,
+                installation_steps, troubleshooting_steps, solution_steps, notes, tags_text,
+                related_software
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                guide_id,
+                payload["title"],
+                payload["category"],
+                payload["subcategory"],
+                payload["difficulty"],
+                payload["summary"],
+                payload["problem_description"],
+                payload["installation_steps"],
+                payload["troubleshooting_steps"],
+                payload["solution_steps"],
+                payload["notes"],
+                payload["tags_text"],
+                payload["related_software"],
+            ),
+        )
+        conn.commit()
+    return int(cursor.lastrowid)
+
+
+def update_guide(db_id: int, values: dict[str, Any]) -> None:
+    payload = _validate_guide_payload(values)
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM guides WHERE id = ?;", (db_id,)).fetchone()
+        if row is None:
+            raise ValueError("Guide not found.")
+        conn.execute(
+            """
+            UPDATE guides
+            SET title = ?,
+                category = ?,
+                subcategory = ?,
+                difficulty = ?,
+                summary = ?,
+                problem_description = ?,
+                installation_steps = ?,
+                troubleshooting_steps = ?,
+                solution_steps = ?,
+                notes = ?,
+                tags_text = ?,
+                related_software = ?,
+                updated_at = datetime('now')
+            WHERE id = ?;
+            """,
+            (
+                payload["title"],
+                payload["category"],
+                payload["subcategory"],
+                payload["difficulty"],
+                payload["summary"],
+                payload["problem_description"],
+                payload["installation_steps"],
+                payload["troubleshooting_steps"],
+                payload["solution_steps"],
+                payload["notes"],
+                payload["tags_text"],
+                payload["related_software"],
+                db_id,
+            ),
+        )
+        conn.commit()
+
+
+def get_guide_by_db_id(db_id: int) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM guides WHERE id = ?;", (db_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def search_guides(
+    search_text: str | None = None,
+    include_archived: bool = True,
+) -> list[dict[str, Any]]:
+    query = """
+        SELECT id, guide_id, title, category, subcategory, difficulty, summary, tags_text,
+               related_software, created_at, updated_at, archived
+        FROM guides
+        WHERE 1 = 1
+    """
+    params: list[Any] = []
+
+    if not include_archived:
+        query += " AND archived = 0"
+
+    normalized = _normalize(search_text)
+    if normalized:
+        like_value = f"%{normalized}%"
+        query += """
+            AND (
+                guide_id LIKE ? COLLATE NOCASE OR
+                title LIKE ? COLLATE NOCASE OR
+                category LIKE ? COLLATE NOCASE OR
+                subcategory LIKE ? COLLATE NOCASE OR
+                difficulty LIKE ? COLLATE NOCASE OR
+                summary LIKE ? COLLATE NOCASE OR
+                problem_description LIKE ? COLLATE NOCASE OR
+                installation_steps LIKE ? COLLATE NOCASE OR
+                troubleshooting_steps LIKE ? COLLATE NOCASE OR
+                solution_steps LIKE ? COLLATE NOCASE OR
+                notes LIKE ? COLLATE NOCASE OR
+                tags_text LIKE ? COLLATE NOCASE OR
+                related_software LIKE ? COLLATE NOCASE
+            )
+        """
+        params.extend([like_value] * 13)
+
+    query += " ORDER BY archived ASC, updated_at DESC, id DESC;"
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def archive_guide(db_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE guides SET archived = 1, updated_at = datetime('now') WHERE id = ?;", (db_id,))
+        conn.commit()
+
+
+def restore_guide(db_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE guides SET archived = 0, updated_at = datetime('now') WHERE id = ?;", (db_id,))
+        conn.commit()
+
+
+def delete_guide(db_id: int) -> None:
+    with get_connection() as conn:
+        attachment_rows = conn.execute(
+            "SELECT file_path FROM ticket_attachments WHERE parent_type = 'guide' AND parent_id = ?;",
+            (db_id,),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM ticket_attachments WHERE parent_type = 'guide' AND parent_id = ?;",
+            (db_id,),
+        )
+        conn.execute("DELETE FROM guides WHERE id = ?;", (db_id,))
+        conn.commit()
+    for row in attachment_rows:
+        Path(str(row["file_path"])).unlink(missing_ok=True)
+
+
+def link_guide_to_ticket(ticket_db_id: int, guide_db_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO guide_links (ticket_id, guide_id)
+            VALUES (?, ?)
+            ON CONFLICT(ticket_id, guide_id) DO NOTHING;
+            """,
+            (ticket_db_id, guide_db_id),
+        )
+        conn.commit()
+
+
+def unlink_guide_from_ticket(ticket_db_id: int, guide_db_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM guide_links WHERE ticket_id = ? AND guide_id = ?;", (ticket_db_id, guide_db_id))
+        conn.commit()
+
+
+def list_guides_for_ticket(ticket_db_id: int) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT g.id, g.guide_id, g.title, g.category, g.difficulty, g.archived, gl.created_at
+            FROM guide_links gl
+            JOIN guides g ON g.id = gl.guide_id
+            WHERE gl.ticket_id = ?
+            ORDER BY gl.id DESC;
+            """,
+            (ticket_db_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def start_backup_log(backup_name: str, backup_path: str, backup_type: str = "manual") -> int:
@@ -798,6 +1070,38 @@ def get_report_priority_distribution(
     )
 
 
+def get_report_guide_count_by_category(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to, field_expr="g.created_at")
+    query = f"""
+        SELECT COALESCE(NULLIF(trim(g.category), ''), 'Uncategorized') AS label, COUNT(*) AS count
+        FROM guides g
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(trim(g.category), ''), 'Uncategorized')
+        ORDER BY count DESC, label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_guide_count_by_difficulty(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to, field_expr="g.created_at")
+    query = f"""
+        SELECT COALESCE(NULLIF(trim(g.difficulty), ''), 'Unspecified') AS label, COUNT(*) AS count
+        FROM guides g
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(trim(g.difficulty), ''), 'Unspecified')
+        ORDER BY count DESC, label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_ticket_by_db_id(db_id: int) -> dict[str, Any] | None:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM tickets WHERE id = ?;", (db_id,)).fetchone()
@@ -862,41 +1166,65 @@ def list_ticket_history(ticket_db_id: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def list_ticket_attachments(ticket_db_id: int) -> list[dict[str, Any]]:
+def list_attachments(parent_type: str, parent_id: int) -> list[dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT
                 id,
                 ticket_id,
+                parent_type,
+                parent_id,
                 COALESCE(filename, file_name) AS filename,
                 file_path,
                 COALESCE(added_at, uploaded_at) AS added_at,
                 note_label
             FROM ticket_attachments
-            WHERE ticket_id = ?
+            WHERE parent_type = ? AND parent_id = ?
             ORDER BY id DESC;
             """,
-            (ticket_db_id,),
+            (parent_type, parent_id),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def add_ticket_attachment(ticket_db_id: int, source_path: str | Path, note_label: str | None = None) -> int:
+def list_ticket_attachments(ticket_db_id: int) -> list[dict[str, Any]]:
+    return list_attachments("ticket", ticket_db_id)
+
+
+def list_note_attachments(note_db_id: int) -> list[dict[str, Any]]:
+    return list_attachments("note", note_db_id)
+
+
+def list_guide_attachments(guide_db_id: int) -> list[dict[str, Any]]:
+    return list_attachments("guide", guide_db_id)
+
+
+def add_attachment(
+    parent_type: str,
+    parent_id: int,
+    source_path: str | Path,
+    note_label: str | None = None,
+) -> int:
+    if parent_type not in {"ticket", "note", "guide"}:
+        raise ValueError("Invalid attachment parent type.")
+
     source = Path(source_path)
     if not source.exists() or not source.is_file():
         raise ValueError("Attachment file was not found.")
 
     extension = source.suffix.lower()
-    if extension not in ALLOWED_ATTACHMENT_EXTENSIONS:
-        raise ValueError("Unsupported image format. Use PNG, JPG, JPEG, or WEBP.")
+    if extension not in ALLOWED_FILE_ATTACHMENT_EXTENSIONS:
+        raise ValueError(
+            "Unsupported file format. Use PNG, JPG, JPEG, WEBP, PDF, DOCX, XLSX, TXT, or ZIP."
+        )
 
     safe_stem = _sanitize_file_name(source.stem)
     unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}_{safe_stem}{extension}"
 
-    ticket_dir = ATTACHMENTS_DIR / str(ticket_db_id)
-    ticket_dir.mkdir(parents=True, exist_ok=True)
-    destination = ticket_dir / unique_name
+    parent_dir = ATTACHMENTS_DIR / parent_type / str(parent_id)
+    parent_dir.mkdir(parents=True, exist_ok=True)
+    destination = parent_dir / unique_name
 
     shutil.copy2(source, destination)
 
@@ -906,21 +1234,25 @@ def add_ticket_attachment(ticket_db_id: int, source_path: str | Path, note_label
     normalized_note = _normalize(note_label)
 
     with get_connection() as conn:
-        ticket_exists = conn.execute("SELECT 1 FROM tickets WHERE id = ?;", (ticket_db_id,)).fetchone()
-        if ticket_exists is None:
+        owner_exists = _parent_exists(conn, parent_type, parent_id)
+        if not owner_exists:
             destination.unlink(missing_ok=True)
-            raise ValueError("Ticket not found.")
+            raise ValueError("Parent record not found.")
+
+        ticket_id_value = _attachment_ticket_id(conn, parent_type, parent_id)
 
         cursor = conn.execute(
             """
             INSERT INTO ticket_attachments (
-                ticket_id, file_name, filename, file_path, note_label,
+                ticket_id, parent_type, parent_id, file_name, filename, file_path, note_label,
                 mime_type, file_size, uploaded_at, added_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
-                ticket_db_id,
+                ticket_id_value,
+                parent_type,
+                parent_id,
                 source.name,
                 source.name,
                 str(destination),
@@ -933,6 +1265,18 @@ def add_ticket_attachment(ticket_db_id: int, source_path: str | Path, note_label
         )
         conn.commit()
     return int(cursor.lastrowid)
+
+
+def add_ticket_attachment(ticket_db_id: int, source_path: str | Path, note_label: str | None = None) -> int:
+    return add_attachment("ticket", ticket_db_id, source_path, note_label)
+
+
+def add_note_attachment(note_db_id: int, source_path: str | Path, note_label: str | None = None) -> int:
+    return add_attachment("note", note_db_id, source_path, note_label)
+
+
+def add_guide_attachment(guide_db_id: int, source_path: str | Path, note_label: str | None = None) -> int:
+    return add_attachment("guide", guide_db_id, source_path, note_label)
 
 
 def remove_ticket_attachment(attachment_id: int) -> None:
@@ -1089,7 +1433,7 @@ def update_ticket(db_id: int, values: dict[str, Any]) -> None:
 def delete_ticket(db_id: int) -> None:
     with get_connection() as conn:
         attachment_rows = conn.execute(
-            "SELECT file_path FROM ticket_attachments WHERE ticket_id = ?;",
+            "SELECT file_path FROM ticket_attachments WHERE parent_type = 'ticket' AND parent_id = ?;",
             (db_id,),
         ).fetchall()
         conn.execute("DELETE FROM tickets WHERE id = ?;", (db_id,))
@@ -1263,6 +1607,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 
     if "added_at" not in attachment_columns:
         conn.execute("ALTER TABLE ticket_attachments ADD COLUMN added_at TEXT;")
+    if "parent_type" not in attachment_columns:
+        conn.execute("ALTER TABLE ticket_attachments ADD COLUMN parent_type TEXT;")
+    if "parent_id" not in attachment_columns:
+        conn.execute("ALTER TABLE ticket_attachments ADD COLUMN parent_id INTEGER;")
 
     conn.execute(
         """
@@ -1278,11 +1626,84 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         WHERE added_at IS NULL OR trim(added_at) = '';
         """
     )
+    conn.execute(
+        """
+        UPDATE ticket_attachments
+        SET parent_type = 'ticket',
+            parent_id = ticket_id
+        WHERE (parent_type IS NULL OR trim(parent_type) = '')
+          AND ticket_id IS NOT NULL;
+        """
+    )
+    _migrate_attachment_table_for_multi_parent(conn)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket_id ON ticket_attachments(ticket_id);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket_attachments_parent ON ticket_attachments(parent_type, parent_id);")
 
 
 def _get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table_name});").fetchall()
     return {str(row["name"]) for row in rows}
+
+
+def _migrate_attachment_table_for_multi_parent(conn: sqlite3.Connection) -> None:
+    table_info = conn.execute("PRAGMA table_info(ticket_attachments);").fetchall()
+    needs_nullable_ticket_id = False
+    for col in table_info:
+        if str(col["name"]) == "ticket_id" and int(col["notnull"] or 0) == 1:
+            needs_nullable_ticket_id = True
+            break
+
+    foreign_keys = conn.execute("PRAGMA foreign_key_list(ticket_attachments);").fetchall()
+    has_ticket_fk = any(str(fk["table"]) == "tickets" for fk in foreign_keys)
+    if not needs_nullable_ticket_id and not has_ticket_fk:
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF;")
+    try:
+        conn.execute("ALTER TABLE ticket_attachments RENAME TO ticket_attachments_legacy;")
+        conn.execute(
+            """
+            CREATE TABLE ticket_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER,
+                parent_type TEXT,
+                parent_id INTEGER,
+                file_name TEXT NOT NULL,
+                filename TEXT,
+                file_path TEXT NOT NULL,
+                note_label TEXT,
+                mime_type TEXT,
+                file_size INTEGER,
+                uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                added_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ticket_attachments (
+                id, ticket_id, parent_type, parent_id, file_name, filename, file_path, note_label,
+                mime_type, file_size, uploaded_at, added_at
+            )
+            SELECT
+                id,
+                ticket_id,
+                COALESCE(parent_type, 'ticket'),
+                COALESCE(parent_id, ticket_id),
+                file_name,
+                filename,
+                file_path,
+                note_label,
+                mime_type,
+                file_size,
+                uploaded_at,
+                COALESCE(added_at, uploaded_at)
+            FROM ticket_attachments_legacy;
+            """
+        )
+        conn.execute("DROP TABLE ticket_attachments_legacy;")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON;")
 
 
 def _seed_defaults(conn: sqlite3.Connection) -> None:
@@ -1417,6 +1838,24 @@ def _generate_next_ticket_id(conn: sqlite3.Connection) -> str:
     return f"{full_prefix}{next_seq:06d}"
 
 
+def _generate_next_guide_id(conn: sqlite3.Connection) -> str:
+    year = datetime.now().year
+    prefix = f"GDE-{year}-"
+    rows = conn.execute("SELECT guide_id FROM guides WHERE guide_id LIKE ?;", (f"{prefix}%",)).fetchall()
+    max_seq = 0
+    for row in rows:
+        guide_id = str(row["guide_id"])
+        parts = guide_id.split("-")
+        if len(parts) < 3:
+            continue
+        try:
+            seq = int(parts[-1])
+        except ValueError:
+            continue
+        max_seq = max(max_seq, seq)
+    return f"{prefix}{max_seq + 1:06d}"
+
+
 def _validate_ticket_payload(values: dict[str, Any]) -> dict[str, str | None]:
     payload = {
         "title": _normalize(values.get("title")),
@@ -1451,6 +1890,26 @@ def _validate_ticket_payload(values: dict[str, Any]) -> dict[str, str | None]:
     return payload
 
 
+def _validate_guide_payload(values: dict[str, Any]) -> dict[str, str | None]:
+    payload = {
+        "title": _normalize(values.get("title")),
+        "category": _normalize(values.get("category")),
+        "subcategory": _normalize(values.get("subcategory")),
+        "difficulty": _normalize(values.get("difficulty")),
+        "summary": _normalize(values.get("summary")),
+        "problem_description": _normalize(values.get("problem_description")),
+        "installation_steps": _normalize(values.get("installation_steps")),
+        "troubleshooting_steps": _normalize(values.get("troubleshooting_steps")),
+        "solution_steps": _normalize(values.get("solution_steps")),
+        "notes": _normalize(values.get("notes")),
+        "tags_text": _normalize(values.get("tags_text")),
+        "related_software": _normalize(values.get("related_software")),
+    }
+    if not payload["title"]:
+        raise ValueError("Guide title is required.")
+    return payload
+
+
 def _normalize(value: Any) -> str | None:
     if value is None:
         return None
@@ -1463,15 +1922,41 @@ def _sanitize_file_name(value: str) -> str:
     return cleaned[:80] or "image"
 
 
-def _build_date_range_filter(date_from: str | None, date_to: str | None) -> tuple[str, list[Any]]:
+def _parent_exists(conn: sqlite3.Connection, parent_type: str, parent_id: int) -> bool:
+    if parent_type == "ticket":
+        row = conn.execute("SELECT 1 FROM tickets WHERE id = ?;", (parent_id,)).fetchone()
+        return row is not None
+    if parent_type == "note":
+        row = conn.execute("SELECT 1 FROM ticket_notes WHERE id = ?;", (parent_id,)).fetchone()
+        return row is not None
+    if parent_type == "guide":
+        row = conn.execute("SELECT 1 FROM guides WHERE id = ?;", (parent_id,)).fetchone()
+        return row is not None
+    return False
+
+
+def _attachment_ticket_id(conn: sqlite3.Connection, parent_type: str, parent_id: int) -> int | None:
+    if parent_type == "ticket":
+        return parent_id
+    if parent_type == "note":
+        row = conn.execute("SELECT ticket_id FROM ticket_notes WHERE id = ?;", (parent_id,)).fetchone()
+        return int(row["ticket_id"]) if row and row["ticket_id"] is not None else None
+    return None
+
+
+def _build_date_range_filter(
+    date_from: str | None,
+    date_to: str | None,
+    field_expr: str = "created_at",
+) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
 
     if _normalize(date_from):
-        clauses.append("date(created_at) >= date(?)")
+        clauses.append(f"date({field_expr}) >= date(?)")
         params.append(date_from)
     if _normalize(date_to):
-        clauses.append("date(created_at) <= date(?)")
+        clauses.append(f"date({field_expr}) <= date(?)")
         params.append(date_to)
 
     if not clauses:

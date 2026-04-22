@@ -7,6 +7,15 @@ Ticket Library Desktop is an offline-first Windows desktop application for ticke
 - OneDrive is used for backup and restore, not as the live SQLite location.
 - Intended for one active computer at a time.
 
+## Guides / Knowledge Base
+- Sidebar now includes **Guides** module.
+- Guide records support:
+  - `guide_id`, title/category/subcategory/difficulty
+  - summary/problem/install/troubleshooting/solution/notes
+  - tags, related software, archived state, timestamps
+- `guide_id` format: `GDE-YYYY-######`.
+- Tickets can link/unlink related guides from ticket detail view.
+
 ## Project Structure
 ```text
 Ticket Library Desktop/
@@ -90,6 +99,22 @@ Covered basic tests:
 - Export filtered tickets to CSV/Excel from Tickets page.
 - Export selected ticket details to PDF.
 - Use Reports page for date-filtered aggregates.
+- Reports now include guide distribution by category and difficulty.
+
+## Attachments
+- Managed local attachments support:
+  - Tickets
+  - Ticket notes
+  - Guides
+- Supported file types:
+  - PNG, JPG, JPEG, WEBP, PDF, DOCX, XLSX, TXT, ZIP
+- Attachment UI supports:
+  - add/remove
+  - drag and drop
+  - clipboard image paste
+  - open file
+  - reveal containing folder
+  - image preview for image formats
 
 ## Package as EXE (PyInstaller Example)
 Install PyInstaller:

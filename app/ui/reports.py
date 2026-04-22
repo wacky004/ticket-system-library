@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.db.database import (
+    get_report_guide_count_by_category,
+    get_report_guide_count_by_difficulty,
     get_report_priority_distribution,
     get_report_resolved_vs_unresolved,
     get_report_ticket_count_by_category,
@@ -87,6 +89,8 @@ class ReportsPage(QWidget):
         self.by_technician = self._build_table_card("Ticket Count by Technician", ["Technician", "Count"])
         self.resolved_split = self._build_table_card("Resolved vs Unresolved", ["Status Group", "Count"])
         self.priority_dist = self._build_table_card("Priority Distribution", ["Priority", "Count"])
+        self.guide_by_category = self._build_table_card("Guide Count by Category", ["Category", "Count"])
+        self.guide_by_difficulty = self._build_table_card("Guide Count by Difficulty", ["Difficulty", "Count"])
 
         tables_grid.addWidget(self.by_date["card"], 0, 0)
         tables_grid.addWidget(self.by_client["card"], 0, 1)
@@ -94,6 +98,8 @@ class ReportsPage(QWidget):
         tables_grid.addWidget(self.by_technician["card"], 1, 1)
         tables_grid.addWidget(self.resolved_split["card"], 2, 0)
         tables_grid.addWidget(self.priority_dist["card"], 2, 1)
+        tables_grid.addWidget(self.guide_by_category["card"], 3, 0)
+        tables_grid.addWidget(self.guide_by_difficulty["card"], 3, 1)
 
         root.addWidget(title)
         root.addWidget(subtitle)
@@ -149,6 +155,14 @@ class ReportsPage(QWidget):
         self._fill_table(
             self.priority_dist["table"],
             [[r.get("label", ""), r.get("count", 0)] for r in get_report_priority_distribution(date_from, date_to)],
+        )
+        self._fill_table(
+            self.guide_by_category["table"],
+            [[r.get("label", ""), r.get("count", 0)] for r in get_report_guide_count_by_category(date_from, date_to)],
+        )
+        self._fill_table(
+            self.guide_by_difficulty["table"],
+            [[r.get("label", ""), r.get("count", 0)] for r in get_report_guide_count_by_difficulty(date_from, date_to)],
         )
 
     def _build_table_card(self, title: str, columns: list[str]) -> dict[str, Any]:

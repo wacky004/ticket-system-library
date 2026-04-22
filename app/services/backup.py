@@ -97,6 +97,16 @@ def create_backup(backup_type: str = "manual") -> dict[str, Any]:
             "database_file": db_target.name,
             "media_dir": "media",
             "settings_file": APP_SETTINGS_EXPORT_NAME,
+            "included_modules": [
+                "tickets",
+                "ticket_notes",
+                "ticket_history",
+                "guides",
+                "guide_links",
+                "attachments_ticket",
+                "attachments_note",
+                "attachments_guide",
+            ],
             "local_db_mtime": _safe_mtime(DB_PATH),
             "local_media_mtime": _latest_mtime(MEDIA_DIR),
             "paths": {

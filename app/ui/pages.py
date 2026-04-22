@@ -23,6 +23,7 @@ from app.db.database import (
     get_last_backup_status,
     get_ticket_count_by_category,
     get_ticket_count_by_priority,
+    list_recent_guides,
     list_recent_tickets,
     list_upcoming_follow_ups,
 )
@@ -111,6 +112,7 @@ class DashboardPage(QWidget):
         self.cards_grid.setVerticalSpacing(10)
 
         self.card_total = SummaryCard("Total Tickets")
+        self.card_guides = SummaryCard("Total Guides")
         self.card_open = SummaryCard("Open Tickets")
         self.card_in_progress = SummaryCard("In Progress")
         self.card_pending = SummaryCard("Pending")
@@ -119,6 +121,7 @@ class DashboardPage(QWidget):
 
         cards = [
             self.card_total,
+            self.card_guides,
             self.card_open,
             self.card_in_progress,
             self.card_pending,
@@ -126,7 +129,7 @@ class DashboardPage(QWidget):
             self.card_archived,
         ]
         for idx, card in enumerate(cards):
-            self.cards_grid.addWidget(card, idx // 3, idx % 3)
+            self.cards_grid.addWidget(card, idx // 4, idx % 4)
 
         content_grid = QGridLayout()
         content_grid.setHorizontalSpacing(12)
@@ -135,6 +138,10 @@ class DashboardPage(QWidget):
         self.recent_table = self._build_table(
             "Recent Tickets",
             ["Ticket ID", "Title", "Client", "Status", "Priority", "Updated"],
+        )
+        self.recent_guides_table = self._build_table(
+            "Recent Guides",
+            ["Guide ID", "Title", "Category", "Difficulty", "Updated"],
         )
         self.follow_ups_table = self._build_table(
             "Upcoming Follow-ups",
@@ -165,10 +172,11 @@ class DashboardPage(QWidget):
         backup_layout.addStretch(1)
 
         content_grid.addWidget(self.recent_table["card"], 0, 0, 1, 2)
-        content_grid.addWidget(self.follow_ups_table["card"], 0, 2, 1, 2)
-        content_grid.addWidget(self.priority_table["card"], 1, 0, 1, 1)
-        content_grid.addWidget(self.category_table["card"], 1, 1, 1, 1)
+        content_grid.addWidget(self.recent_guides_table["card"], 0, 2, 1, 2)
+        content_grid.addWidget(self.follow_ups_table["card"], 1, 0, 1, 2)
         content_grid.addWidget(backup_card, 1, 2, 1, 2)
+        content_grid.addWidget(self.priority_table["card"], 2, 0, 1, 2)
+        content_grid.addWidget(self.category_table["card"], 2, 2, 1, 2)
 
         root.addLayout(header_row)
         root.addLayout(self.cards_grid)
@@ -180,6 +188,7 @@ class DashboardPage(QWidget):
     def refresh_data(self) -> None:
         summary = get_dashboard_summary()
         self.card_total.set_value(summary["total"])
+        self.card_guides.set_value(summary["guides"])
         self.card_open.set_value(summary["open"])
         self.card_in_progress.set_value(summary["in_progress"])
         self.card_pending.set_value(summary["pending"])
@@ -198,6 +207,20 @@ class DashboardPage(QWidget):
                     row.get("updated_at") or "",
                 ]
                 for row in list_recent_tickets(limit=10)
+            ],
+        )
+
+        self._fill_table(
+            self.recent_guides_table["table"],
+            [
+                [
+                    row.get("guide_id") or "",
+                    row.get("title") or "",
+                    row.get("category") or "",
+                    row.get("difficulty") or "",
+                    row.get("updated_at") or "",
+                ]
+                for row in list_recent_guides(limit=10)
             ],
         )
 
