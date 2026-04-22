@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -15,11 +16,16 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QMessageBox,
 )
 
 from app.config import APP_NAME
+from app.ui.backups import BackupsPage
 from app.ui.pages import DashboardPage, PlaceholderPage
+from app.ui.reports import ReportsPage
+from app.ui.settings import SettingsPage
 from app.ui.tickets import NewTicketPage, TicketsPage
+from app.services.backup import create_backup, get_auto_backup_on_exit, get_configured_backup_root
 
 
 @dataclass(frozen=True)
@@ -94,7 +100,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
-        footer = QLabel("Phase 6 Dashboard")
+        footer = QLabel("Phase 7 Exports")
         footer.setObjectName("SidebarFooter")
         layout.addWidget(footer)
 
@@ -111,6 +117,9 @@ class MainWindow(QMainWindow):
         )
         self.new_ticket_page = NewTicketPage(on_ticket_saved=self._sync_ticket_views)
         self.dashboard_page = DashboardPage()
+        self.reports_page = ReportsPage()
+        self.backups_page = BackupsPage()
+        self.settings_page = SettingsPage()
 
         for item in NAV_ITEMS:
             if item.name == "Dashboard":
@@ -119,6 +128,12 @@ class MainWindow(QMainWindow):
                 stack.addWidget(self.tickets_page)
             elif item.name == "New Ticket":
                 stack.addWidget(self.new_ticket_page)
+            elif item.name == "Reports":
+                stack.addWidget(self.reports_page)
+            elif item.name == "Backups":
+                stack.addWidget(self.backups_page)
+            elif item.name == "Settings":
+                stack.addWidget(self.settings_page)
             else:
                 stack.addWidget(PlaceholderPage(item.name, item.subtitle))
 
@@ -133,8 +148,22 @@ class MainWindow(QMainWindow):
             self.new_ticket_page.refresh_ticket_preview()
         elif NAV_ITEMS[index].name == "Dashboard":
             self.dashboard_page.refresh_data()
+        elif NAV_ITEMS[index].name == "Reports":
+            self.reports_page.refresh_data()
+        elif NAV_ITEMS[index].name == "Backups":
+            self.backups_page.refresh_data()
 
     def _sync_ticket_views(self) -> None:
         self.tickets_page.reload_table()
         self.new_ticket_page.refresh_ticket_preview()
         self.dashboard_page.refresh_data()
+        self.reports_page.refresh_data()
+        self.backups_page.refresh_data()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if get_auto_backup_on_exit() and get_configured_backup_root() is not None:
+            try:
+                create_backup(backup_type="auto_exit")
+            except Exception as exc:
+                QMessageBox.warning(self, "Auto Backup Failed", f"Automatic backup failed.\n\n{exc}")
+        super().closeEvent(event)

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
-from app.config import ATTACHMENTS_DIR, DB_PATH, DATA_DIR
+from app.config import ATTACHMENTS_DIR, DB_PATH, DATA_DIR, EXPORTS_DIR
 
 
 SCHEMA_SQL = """
@@ -180,6 +180,9 @@ DEFAULT_SETTINGS = [
     ("default_statuses", "Open,In Progress,Waiting on Client,Resolved,Closed", "csv"),
     ("default_priorities", "Low,Medium,High,Urgent", "csv"),
     ("theme_mode", "dark", "string"),
+    ("export_directory", str(EXPORTS_DIR), "path"),
+    ("onedrive_backup_path", "", "path"),
+    ("auto_backup_on_exit", "0", "bool"),
 ]
 
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -261,6 +264,7 @@ def initialize_database() -> None:
     """Create database file, schema, and defaults."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     with get_connection() as conn:
         conn.executescript(SCHEMA_SQL)
@@ -316,6 +320,12 @@ def generate_next_ticket_id() -> str:
 
 def list_tickets(include_archived: bool = True) -> list[dict[str, Any]]:
     return search_tickets({"include_archived": include_archived})
+
+
+def has_any_tickets() -> bool:
+    with get_connection() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM tickets;").fetchone()
+    return bool(row and int(row["count"]) > 0)
 
 
 def search_tickets(filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -458,6 +468,49 @@ def get_ticket_filter_options() -> dict[str, list[str]]:
     }
 
 
+def get_export_directory() -> str:
+    value = get_app_setting("export_directory")
+    directory = Path(value) if value else EXPORTS_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory)
+
+
+def set_export_directory(path_value: str) -> str:
+    normalized = str(Path(path_value).expanduser().resolve())
+    Path(normalized).mkdir(parents=True, exist_ok=True)
+    set_app_setting("export_directory", normalized, "path")
+    return normalized
+
+
+def get_app_setting(setting_key: str) -> str | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT setting_value FROM app_settings WHERE setting_key = ?;",
+            (setting_key,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _normalize(row["setting_value"])
+
+
+def set_app_setting(setting_key: str, setting_value: str, setting_type: str = "string") -> None:
+    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value, setting_type, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(setting_key)
+            DO UPDATE SET
+                setting_value = excluded.setting_value,
+                setting_type = excluded.setting_type,
+                updated_at = excluded.updated_at;
+            """,
+            (setting_key, setting_value, setting_type, updated_at),
+        )
+        conn.commit()
+
+
 def get_dashboard_summary() -> dict[str, int]:
     with get_connection() as conn:
         total = int(conn.execute("SELECT COUNT(*) AS count FROM tickets;").fetchone()["count"])
@@ -582,6 +635,184 @@ def get_last_backup_status() -> dict[str, Any]:
         "status": row["status"] or "unknown",
         "timestamp": completed or "-",
     }
+
+
+def start_backup_log(backup_name: str, backup_path: str, backup_type: str = "manual") -> int:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO backup_logs (backup_name, backup_path, backup_type, status, started_at)
+            VALUES (?, ?, ?, 'started', datetime('now'));
+            """,
+            (backup_name, backup_path, backup_type),
+        )
+        conn.commit()
+    return int(cursor.lastrowid)
+
+
+def complete_backup_log(
+    log_id: int,
+    status: str,
+    backup_size: int | None = None,
+    notes: str | None = None,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE backup_logs
+            SET status = ?,
+                backup_size = ?,
+                notes = ?,
+                completed_at = datetime('now')
+            WHERE id = ?;
+            """,
+            (status, backup_size, notes, log_id),
+        )
+        conn.commit()
+
+
+def get_last_backup_log() -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, backup_name, backup_path, backup_size, backup_type, status, started_at, completed_at, notes
+            FROM backup_logs
+            ORDER BY id DESC
+            LIMIT 1;
+            """
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_backup_logs(limit: int = 30) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, backup_name, backup_path, backup_size, backup_type, status, started_at, completed_at, notes
+            FROM backup_logs
+            ORDER BY id DESC
+            LIMIT ?;
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_app_settings() -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT setting_key, setting_value, setting_type, updated_at
+            FROM app_settings
+            ORDER BY setting_key ASC;
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_ticket_count_by_date(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to)
+    query = f"""
+        SELECT date(created_at) AS label, COUNT(*) AS count
+        FROM tickets
+        {where_sql}
+        GROUP BY date(created_at)
+        ORDER BY date(created_at) ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_ticket_count_by_client(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to)
+    query = f"""
+        SELECT COALESCE(NULLIF(trim(client_name), ''), 'Unknown Client') AS label, COUNT(*) AS count
+        FROM tickets
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(trim(client_name), ''), 'Unknown Client')
+        ORDER BY count DESC, label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_ticket_count_by_category(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to)
+    query = f"""
+        SELECT COALESCE(NULLIF(trim(category), ''), 'Uncategorized') AS label, COUNT(*) AS count
+        FROM tickets
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(trim(category), ''), 'Uncategorized')
+        ORDER BY count DESC, label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_ticket_count_by_technician(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to)
+    query = f"""
+        SELECT COALESCE(NULLIF(trim(assigned_to), ''), 'Unassigned') AS label, COUNT(*) AS count
+        FROM tickets
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(trim(assigned_to), ''), 'Unassigned')
+        ORDER BY count DESC, label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_resolved_vs_unresolved(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to)
+    query = f"""
+        SELECT
+            CASE
+                WHEN status IN ('Resolved', 'Closed') THEN 'Resolved'
+                ELSE 'Unresolved'
+            END AS label,
+            COUNT(*) AS count
+        FROM tickets
+        {where_sql}
+        GROUP BY
+            CASE
+                WHEN status IN ('Resolved', 'Closed') THEN 'Resolved'
+                ELSE 'Unresolved'
+            END
+        ORDER BY label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_priority_distribution(
+    date_from: str | None = None, date_to: str | None = None
+) -> list[dict[str, Any]]:
+    where_sql, params = _build_date_range_filter(date_from, date_to)
+    query = f"""
+        SELECT COALESCE(NULLIF(trim(priority), ''), 'Unspecified') AS label, COUNT(*) AS count
+        FROM tickets
+        {where_sql}
+        GROUP BY COALESCE(NULLIF(trim(priority), ''), 'Unspecified')
+        ORDER BY count DESC, label ASC;
+    """
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_ticket_by_db_id(db_id: int) -> dict[str, Any] | None:
@@ -1157,6 +1388,22 @@ def _normalize(value: Any) -> str | None:
 def _sanitize_file_name(value: str) -> str:
     cleaned = "".join(ch for ch in value if ch.isalnum() or ch in {"-", "_"})
     return cleaned[:80] or "image"
+
+
+def _build_date_range_filter(date_from: str | None, date_to: str | None) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if _normalize(date_from):
+        clauses.append("date(created_at) >= date(?)")
+        params.append(date_from)
+    if _normalize(date_to):
+        clauses.append("date(created_at) <= date(?)")
+        params.append(date_to)
+
+    if not clauses:
+        return "", []
+    return "WHERE " + " AND ".join(clauses), params
 
 
 def _build_ticket_history_rows(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -46,6 +47,8 @@ from app.db.database import (
     generate_next_ticket_id,
     get_default_priorities,
     get_default_statuses,
+    get_export_directory,
+    set_export_directory,
     get_ticket_by_db_id,
     get_ticket_filter_options,
     list_categories,
@@ -58,6 +61,7 @@ from app.db.database import (
     search_tickets,
     update_ticket,
 )
+from app.services.exports import export_ticket_to_pdf, export_tickets_to_csv, export_tickets_to_excel
 
 
 class TicketFormWidget(QWidget):
@@ -924,7 +928,7 @@ class TicketDetailDialog(QDialog):
 
 
 class TicketsPage(QWidget):
-    """Tickets browser page with search, filters, sorting, and CRUD actions."""
+    """Tickets browser page with search, filters, sorting, CRUD actions, and exports."""
 
     TABLE_COLUMNS = [
         "ID",
@@ -958,7 +962,7 @@ class TicketsPage(QWidget):
 
         title = QLabel("Tickets")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("Browse, search, sort, and manage current or historical tickets.")
+        subtitle = QLabel("Browse, search, sort, manage, and export current ticket data.")
         subtitle.setObjectName("PageSubtitle")
 
         controls_card = QFrame()
@@ -1015,6 +1019,11 @@ class TicketsPage(QWidget):
         self.results_label = QLabel("0 tickets")
         self.results_label.setObjectName("MetaLabel")
 
+        self.export_dir_input = QLineEdit(get_export_directory())
+        self.export_dir_input.setReadOnly(True)
+        self.export_dir_button = QPushButton("Set Export Folder")
+        self.export_dir_button.setObjectName("SecondaryButton")
+
         self.new_button = QPushButton("New Ticket")
         self.new_button.setObjectName("PrimaryButton")
         self.open_button = QPushButton("Open/Edit")
@@ -1027,6 +1036,12 @@ class TicketsPage(QWidget):
         self.delete_button.setObjectName("DangerButton")
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setObjectName("SecondaryButton")
+        self.export_csv_button = QPushButton("Export CSV")
+        self.export_csv_button.setObjectName("SecondaryButton")
+        self.export_excel_button = QPushButton("Export Excel")
+        self.export_excel_button.setObjectName("SecondaryButton")
+        self.export_pdf_button = QPushButton("Export Ticket PDF")
+        self.export_pdf_button.setObjectName("SecondaryButton")
 
         controls_layout.addWidget(self.search_input, 0, 0, 1, 6)
         controls_layout.addWidget(QLabel("Status"), 1, 0)
@@ -1058,6 +1073,10 @@ class TicketsPage(QWidget):
         controls_layout.addWidget(self.clear_filters_button, 3, 4)
         controls_layout.addWidget(self.results_label, 3, 5)
 
+        controls_layout.addWidget(QLabel("Export Folder"), 4, 0)
+        controls_layout.addWidget(self.export_dir_input, 4, 1, 1, 4)
+        controls_layout.addWidget(self.export_dir_button, 4, 5)
+
         quick_layout = QHBoxLayout()
         quick_layout.setContentsMargins(0, 0, 0, 0)
         quick_layout.setSpacing(8)
@@ -1067,7 +1086,7 @@ class TicketsPage(QWidget):
         quick_layout.addWidget(self.quick_resolved_button)
         quick_layout.addWidget(self.quick_archived_button)
         quick_layout.addStretch(1)
-        controls_layout.addLayout(quick_layout, 4, 0, 1, 6)
+        controls_layout.addLayout(quick_layout, 5, 0, 1, 6)
 
         actions_layout = QHBoxLayout()
         actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -1078,8 +1097,11 @@ class TicketsPage(QWidget):
         actions_layout.addWidget(self.reopen_button)
         actions_layout.addWidget(self.delete_button)
         actions_layout.addStretch(1)
+        actions_layout.addWidget(self.export_csv_button)
+        actions_layout.addWidget(self.export_excel_button)
+        actions_layout.addWidget(self.export_pdf_button)
         actions_layout.addWidget(self.refresh_button)
-        controls_layout.addLayout(actions_layout, 5, 0, 1, 6)
+        controls_layout.addLayout(actions_layout, 6, 0, 1, 6)
 
         self.table = QTableWidget(0, len(self.TABLE_COLUMNS))
         self.table.setObjectName("TicketsTable")
@@ -1104,6 +1126,10 @@ class TicketsPage(QWidget):
         self.reopen_button.clicked.connect(self.reopen_selected_ticket)
         self.delete_button.clicked.connect(self.delete_selected_ticket)
         self.refresh_button.clicked.connect(self.reload_table)
+        self.export_dir_button.clicked.connect(self.set_export_directory_ui)
+        self.export_csv_button.clicked.connect(self.export_filtered_csv)
+        self.export_excel_button.clicked.connect(self.export_filtered_excel)
+        self.export_pdf_button.clicked.connect(self.export_selected_ticket_pdf)
 
         self.search_input.textChanged.connect(lambda _text: self.reload_table())
         self.status_filter.currentIndexChanged.connect(lambda _index: self.reload_table())
@@ -1240,6 +1266,84 @@ class TicketsPage(QWidget):
         self.archived_only_check.setChecked(True)
         self.reload_table()
 
+    def set_export_directory_ui(self) -> None:
+        current = self.export_dir_input.text().strip() or get_export_directory()
+        directory = QFileDialog.getExistingDirectory(self, "Select Export Folder", current)
+        if not directory:
+            return
+        saved = set_export_directory(directory)
+        self.export_dir_input.setText(saved)
+
+    def export_filtered_csv(self) -> None:
+        rows = search_tickets(self._collect_filters())
+        if not rows:
+            QMessageBox.information(self, "No Data", "No tickets to export with current filters.")
+            return
+        default_path = Path(self.export_dir_input.text()) / f"tickets_export_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Filtered Tickets to CSV",
+            str(default_path),
+            "CSV Files (*.csv)",
+        )
+        if not file_path:
+            return
+        try:
+            export_tickets_to_csv(rows, Path(file_path))
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed", f"CSV export failed.\n\n{exc}")
+            return
+        QMessageBox.information(self, "Export Complete", f"CSV exported:\n{file_path}")
+
+    def export_filtered_excel(self) -> None:
+        rows = search_tickets(self._collect_filters())
+        if not rows:
+            QMessageBox.information(self, "No Data", "No tickets to export with current filters.")
+            return
+        default_path = Path(self.export_dir_input.text()) / f"tickets_export_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Filtered Tickets to Excel",
+            str(default_path),
+            "Excel Files (*.xlsx)",
+        )
+        if not file_path:
+            return
+        try:
+            export_tickets_to_excel(rows, Path(file_path))
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed", f"Excel export failed.\n\n{exc}")
+            return
+        QMessageBox.information(self, "Export Complete", f"Excel exported:\n{file_path}")
+
+    def export_selected_ticket_pdf(self) -> None:
+        ticket = self._selected_ticket()
+        if ticket is None:
+            QMessageBox.information(self, "No Selection", "Select a ticket first.")
+            return
+
+        ticket_id = str(ticket.get("ticket_id") or "ticket")
+        default_path = Path(self.export_dir_input.text()) / f"{ticket_id}_details.pdf"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Ticket to PDF",
+            str(default_path),
+            "PDF Files (*.pdf)",
+        )
+        if not file_path:
+            return
+
+        try:
+            notes = list_ticket_notes(int(ticket["id"]))
+            attachments = list_ticket_attachments(int(ticket["id"]))
+            history = list_ticket_history(int(ticket["id"]))
+            export_ticket_to_pdf(ticket, notes, attachments, history, Path(file_path))
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed", f"PDF export failed.\n\n{exc}")
+            return
+
+        QMessageBox.information(self, "Export Complete", f"PDF exported:\n{file_path}")
+
     def _selected_ticket_db_id(self) -> int | None:
         row = self.table.currentRow()
         if row < 0:
@@ -1282,11 +1386,7 @@ class TicketsPage(QWidget):
             QMessageBox.information(self, "Already Archived", "Selected ticket is already archived.")
             return
 
-        prompt = QMessageBox.question(
-            self,
-            "Confirm Archive",
-            f"Archive ticket {ticket.get('ticket_id')}?",
-        )
+        prompt = QMessageBox.question(self, "Confirm Archive", f"Archive ticket {ticket.get('ticket_id')}?")
         if prompt != QMessageBox.StandardButton.Yes:
             return
 
@@ -1351,7 +1451,6 @@ class TicketsPage(QWidget):
         combo.clear()
         combo.addItem("")
         combo.addItems(values)
-
         index = combo.findText(selected)
         combo.setCurrentIndex(index if index >= 0 else 0)
         combo.blockSignals(False)
@@ -1361,7 +1460,6 @@ class TicketsPage(QWidget):
         if not value:
             combo.setCurrentIndex(0)
             return
-
         index = combo.findText(value)
         if index < 0:
             combo.addItem(value)
