@@ -104,6 +104,14 @@ def build_stylesheet(mode: ThemeMode = ThemeMode.DARK) -> str:
         font-weight: 500;
     }}
 
+    #NavButton[compact="true"] {{
+        text-align: center;
+        padding: 9px 2px;
+        font-size: 9.3pt;
+        font-weight: 700;
+        min-height: 34px;
+    }}
+
     #NavButton:hover {{
         background-color: {palette['surface_hover']};
         border-color: {palette['border']};
@@ -119,6 +127,10 @@ def build_stylesheet(mode: ThemeMode = ThemeMode.DARK) -> str:
     #SidebarFooter {{
         color: {palette['muted']};
         font-size: 8.8pt;
+    }}
+
+    #Sidebar[collapsed="true"] #SidebarHeader {{
+        border-bottom: 0;
     }}
 
     QFrame#Card, QFrame#SectionBlock, QFrame#SummaryCard, QFrame#ReadableContentCard {{

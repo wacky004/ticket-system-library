@@ -36,15 +36,16 @@ from app.ui.tickets import NewTicketDialog, NewTicketPage, TicketsPage
 class NavItem:
     name: str
     icon: str
+    compact_label: str
 
 
 NAV_ITEMS = [
-    NavItem("Dashboard", "▦"),
-    NavItem("Tickets", "◫"),
-    NavItem("Guides", "◧"),
-    NavItem("Reports", "◷"),
-    NavItem("Backups", "⤓"),
-    NavItem("Settings", "⚙"),
+    NavItem("Dashboard", "DB", "DB"),
+    NavItem("Tickets", "TK", "TK"),
+    NavItem("Guides", "KB", "KB"),
+    NavItem("Reports", "RP", "RP"),
+    NavItem("Backups", "BK", "BK"),
+    NavItem("Settings", "ST", "ST"),
 ]
 
 
@@ -94,9 +95,9 @@ class MainWindow(QMainWindow):
 
         self.brand_label = QLabel("Ticket Library Desktop")
         self.brand_label.setObjectName("BrandLabel")
-        self.toggle_sidebar_button = QPushButton("⟨")
+        self.toggle_sidebar_button = QPushButton("<")
         self.toggle_sidebar_button.setObjectName("SecondaryButton")
-        self.toggle_sidebar_button.setFixedWidth(34)
+        self.toggle_sidebar_button.setFixedSize(36, 36)
         self.toggle_sidebar_button.clicked.connect(self._toggle_sidebar)
 
         brand_row.addWidget(self.brand_label, 1)
@@ -115,6 +116,7 @@ class MainWindow(QMainWindow):
             button = QPushButton(f"{item.icon}  {item.name}")
             button.setObjectName("NavButton")
             button.setCheckable(True)
+            button.setToolTip(item.name)
             button.clicked.connect(lambda _checked, i=index: self._set_page(i))
             self._nav_buttons.append(button)
             layout.addWidget(button)
@@ -150,22 +152,35 @@ class MainWindow(QMainWindow):
 
     def _toggle_sidebar(self) -> None:
         self._sidebar_expanded = not self._sidebar_expanded
+        self.sidebar.setProperty("collapsed", not self._sidebar_expanded)
+
         if self._sidebar_expanded:
             self.sidebar.setFixedWidth(250)
             self.brand_label.show()
             self.brand_sub_label.show()
             self.footer_label.show()
-            self.toggle_sidebar_button.setText("⟨")
+            self.toggle_sidebar_button.setText("<")
             for i, item in enumerate(NAV_ITEMS):
-                self._nav_buttons[i].setText(f"{item.icon}  {item.name}")
+                button = self._nav_buttons[i]
+                button.setText(f"{item.icon}  {item.name}")
+                button.setProperty("compact", False)
+                button.style().unpolish(button)
+                button.style().polish(button)
         else:
-            self.sidebar.setFixedWidth(74)
+            self.sidebar.setFixedWidth(90)
             self.brand_label.hide()
             self.brand_sub_label.hide()
             self.footer_label.hide()
-            self.toggle_sidebar_button.setText("⟩")
+            self.toggle_sidebar_button.setText(">")
             for i, item in enumerate(NAV_ITEMS):
-                self._nav_buttons[i].setText(item.icon)
+                button = self._nav_buttons[i]
+                button.setText(item.compact_label)
+                button.setProperty("compact", True)
+                button.style().unpolish(button)
+                button.style().polish(button)
+
+        self.sidebar.style().unpolish(self.sidebar)
+        self.sidebar.style().polish(self.sidebar)
 
     def _set_page(self, index: int) -> None:
         current_index = self.stack.currentIndex()
