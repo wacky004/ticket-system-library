@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.config import APP_NAME
 from app.ui.pages import PlaceholderPage
+from app.ui.tickets import NewTicketPage, TicketsPage
 
 
 @dataclass(frozen=True)
@@ -104,8 +105,19 @@ class MainWindow(QMainWindow):
         stack.setObjectName("MainStack")
         stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+        self.tickets_page = TicketsPage(
+            on_request_new_ticket=lambda: self._set_page(2),
+            on_data_changed=self._sync_ticket_views,
+        )
+        self.new_ticket_page = NewTicketPage(on_ticket_saved=self._sync_ticket_views)
+
         for item in NAV_ITEMS:
-            stack.addWidget(PlaceholderPage(item.name, item.subtitle))
+            if item.name == "Tickets":
+                stack.addWidget(self.tickets_page)
+            elif item.name == "New Ticket":
+                stack.addWidget(self.new_ticket_page)
+            else:
+                stack.addWidget(PlaceholderPage(item.name, item.subtitle))
 
         return stack
 
@@ -113,3 +125,10 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         for button_index, button in enumerate(self._nav_buttons):
             button.setChecked(button_index == index)
+
+        if NAV_ITEMS[index].name == "New Ticket":
+            self.new_ticket_page.refresh_ticket_preview()
+
+    def _sync_ticket_views(self) -> None:
+        self.tickets_page.reload_table()
+        self.new_ticket_page.refresh_ticket_preview()

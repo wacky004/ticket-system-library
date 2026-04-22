@@ -112,4 +112,90 @@ def build_stylesheet(mode: ThemeMode = ThemeMode.DARK) -> str:
         color: {palette['muted']};
         max-width: 700px;
     }}
+
+    QLabel {{
+        background: transparent;
+    }}
+
+    QFrame#Card {{
+        background-color: {palette['surface']};
+        border: 1px solid {palette['border']};
+        border-radius: 10px;
+    }}
+
+    QLineEdit, QTextEdit, QComboBox, QTableWidget {{
+        background-color: {palette['surface']};
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+        padding: 6px 8px;
+        selection-background-color: {palette['accent']};
+        selection-color: {palette['text']};
+    }}
+
+    QTextEdit {{
+        padding-top: 8px;
+    }}
+
+    QComboBox::drop-down {{
+        border: 0px;
+        width: 20px;
+    }}
+
+    QHeaderView::section {{
+        background-color: {palette['surface_2']};
+        color: {palette['text']};
+        border: 0px;
+        border-right: 1px solid {palette['border']};
+        border-bottom: 1px solid {palette['border']};
+        padding: 8px;
+        font-weight: 600;
+    }}
+
+    QTableWidget {{
+        gridline-color: {palette['border']};
+    }}
+
+    QPushButton#PrimaryButton {{
+        border: 1px solid {palette['accent']};
+        border-radius: 8px;
+        background-color: {palette['accent']};
+        color: {palette['bg']};
+        font-weight: 600;
+        padding: 8px 14px;
+    }}
+
+    QPushButton#PrimaryButton:hover {{
+        background-color: {palette['text']};
+        border-color: {palette['text']};
+    }}
+
+    QPushButton#SecondaryButton {{
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+        background-color: {palette['surface_2']};
+        color: {palette['text']};
+        padding: 8px 14px;
+    }}
+
+    QPushButton#SecondaryButton:hover {{
+        border-color: {palette['accent']};
+    }}
+
+    QPushButton#DangerButton {{
+        border: 1px solid #d86060;
+        border-radius: 8px;
+        background-color: #6b2f2f;
+        color: #ffdede;
+        padding: 8px 14px;
+        font-weight: 600;
+    }}
+
+    QPushButton#DangerButton:hover {{
+        background-color: #8e3b3b;
+    }}
+
+    #MetaLabel {{
+        color: {palette['muted']};
+        font-size: 9.5pt;
+    }}
     """

@@ -1,15 +1,19 @@
-# Ticket Library Desktop (Phase 1)
+﻿# Ticket Library Desktop (Phase 2)
 
 Ticket Library Desktop is an offline-first Windows desktop application built with Python and PySide6.
 
-This Phase 1 delivery focuses on the app foundation:
-- clean project structure
-- main desktop window
-- sidebar navigation shell
-- placeholder pages
-- modern theme-ready UI
-- SQLite database initialization
-- schema and default seed data
+Phase 2 delivers full ticket CRUD on top of the Phase 1 foundation.
+
+## Features Implemented
+- Modern desktop shell with sidebar navigation
+- New Ticket form with validation
+- Auto-generated Ticket ID format: `TKT-YYYY-000001`
+- Ticket list table (with search placeholder for next phase)
+- Open/Edit ticket detail dialog
+- Delete with confirmation
+- Archive and Reopen flows
+- Automatic timestamps (`created_at`, `updated_at`, `resolved_at` rules)
+- SQLite schema initialization + seed defaults + sample tickets
 
 ## Tech Stack
 - Python 3.11+ (recommended: 3.11-3.13 for current PySide6 wheel compatibility)
@@ -34,23 +38,21 @@ Ticket Library Desktop/
 |     |- __init__.py
 |     |- main_window.py
 |     |- pages.py
-|     `- theme.py
+|     |- theme.py
+|     `- tickets.py
 `- data/
    `- ticket_library.db (auto-created on first run)
 ```
 
-## Implemented Navigation Pages
-- Dashboard
-- Tickets
-- New Ticket
-- Reports
-- Backups
-- Settings
+## Navigation
+- Dashboard (placeholder)
+- Tickets (CRUD table/actions)
+- New Ticket (full form)
+- Reports (placeholder)
+- Backups (placeholder)
+- Settings (placeholder)
 
-## Database Initialization
-On startup, the app creates `data/ticket_library.db` if it does not exist, then applies schema setup and seed defaults.
-
-### Core Tables Created
+## Core Tables
 - `tickets`
 - `ticket_notes`
 - `ticket_attachments`
@@ -62,45 +64,11 @@ On startup, the app creates `data/ticket_library.db` if it does not exist, then 
 - `app_settings`
 - `backup_logs`
 
-### Seeded Defaults
-- Statuses (stored in `app_settings`):
-  - Open
-  - In Progress
-  - Waiting on Client
-  - Resolved
-  - Closed
-- Priorities (stored in `app_settings`):
-  - Low
-  - Medium
-  - High
-  - Urgent
-- Categories (stored in `categories`) with starter subcategories.
-
-## Ticket Fields Included
-The `tickets` table includes:
-- id
-- ticket_id
-- title
-- client_name
-- va_name
-- category
-- subcategory
-- priority
-- status
-- assigned_to
-- source
-- description
-- troubleshooting
-- resolution
-- next_action
-- tags_text
-- follow_up_date
-- device_name
-- software_tools
-- created_at
-- updated_at
-- resolved_at
-- archived
+## Seed Data
+- Default statuses (`app_settings`): Open, In Progress, Waiting on Client, Resolved, Closed
+- Default priorities (`app_settings`): Low, Medium, High, Urgent
+- Default categories + subcategories
+- Sample tickets for immediate testing
 
 ## Run Instructions (Windows PowerShell)
 ```powershell
@@ -114,14 +82,10 @@ pip install -r requirements.txt
 python main.py
 ```
 
-If you only have Python 3.14 installed, install Python 3.13 (or 3.12/3.11) and rerun the setup.
-
-## Notes for Next Phases
-Phase 1 intentionally does not include advanced ticket workflows yet.
-Future phases can add:
-- ticket CRUD flows
-- searching/filtering
-- reporting widgets
-- backup/restore actions
-- settings UI controls
-"# ticket-system-library" 
+## Git Save Commands
+```powershell
+cd "C:\Users\Dev1\Desktop\Ticket Library Desktop"
+git add .
+git commit -m "Describe your changes"
+git push
+```
