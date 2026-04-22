@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import APP_NAME
-from app.ui.pages import PlaceholderPage
+from app.ui.pages import DashboardPage, PlaceholderPage
 from app.ui.tickets import NewTicketPage, TicketsPage
 
 
@@ -94,7 +94,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
-        footer = QLabel("Phase 1 Foundation")
+        footer = QLabel("Phase 6 Dashboard")
         footer.setObjectName("SidebarFooter")
         layout.addWidget(footer)
 
@@ -110,9 +110,12 @@ class MainWindow(QMainWindow):
             on_data_changed=self._sync_ticket_views,
         )
         self.new_ticket_page = NewTicketPage(on_ticket_saved=self._sync_ticket_views)
+        self.dashboard_page = DashboardPage()
 
         for item in NAV_ITEMS:
-            if item.name == "Tickets":
+            if item.name == "Dashboard":
+                stack.addWidget(self.dashboard_page)
+            elif item.name == "Tickets":
                 stack.addWidget(self.tickets_page)
             elif item.name == "New Ticket":
                 stack.addWidget(self.new_ticket_page)
@@ -128,7 +131,10 @@ class MainWindow(QMainWindow):
 
         if NAV_ITEMS[index].name == "New Ticket":
             self.new_ticket_page.refresh_ticket_preview()
+        elif NAV_ITEMS[index].name == "Dashboard":
+            self.dashboard_page.refresh_data()
 
     def _sync_ticket_views(self) -> None:
         self.tickets_page.reload_table()
         self.new_ticket_page.refresh_ticket_preview()
+        self.dashboard_page.refresh_data()

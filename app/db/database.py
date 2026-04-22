@@ -154,6 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_tickets_va_name ON tickets(va_name);
 CREATE INDEX IF NOT EXISTS idx_tickets_assigned_to ON tickets(assigned_to);
 CREATE INDEX IF NOT EXISTS idx_tickets_archived ON tickets(archived);
 CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON tickets(created_at);
+CREATE INDEX IF NOT EXISTS idx_tickets_follow_up_date ON tickets(follow_up_date);
 CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket_id ON ticket_attachments(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_notes_ticket_id ON ticket_notes(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket_id ON ticket_history(ticket_id);
@@ -454,6 +455,132 @@ def get_ticket_filter_options() -> dict[str, list[str]]:
         "categories": list_categories(),
         "clients": [str(row["client_name"]) for row in client_rows],
         "vas": [str(row["va_name"]) for row in va_rows],
+    }
+
+
+def get_dashboard_summary() -> dict[str, int]:
+    with get_connection() as conn:
+        total = int(conn.execute("SELECT COUNT(*) AS count FROM tickets;").fetchone()["count"])
+        open_count = int(
+            conn.execute("SELECT COUNT(*) AS count FROM tickets WHERE status = 'Open' AND archived = 0;").fetchone()[
+                "count"
+            ]
+        )
+        in_progress_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM tickets WHERE status = 'In Progress' AND archived = 0;"
+            ).fetchone()["count"]
+        )
+        pending_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM tickets
+                WHERE archived = 0 AND (status = 'Pending' OR status = 'Waiting on Client');
+                """
+            ).fetchone()["count"]
+        )
+        resolved_count = int(
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM tickets WHERE archived = 0 AND (status = 'Resolved' OR status = 'Closed');"
+            ).fetchone()["count"]
+        )
+        archived_count = int(
+            conn.execute("SELECT COUNT(*) AS count FROM tickets WHERE archived = 1;").fetchone()["count"]
+        )
+
+    return {
+        "total": total,
+        "open": open_count,
+        "in_progress": in_progress_count,
+        "pending": pending_count,
+        "resolved": resolved_count,
+        "archived": archived_count,
+    }
+
+
+def list_recent_tickets(limit: int = 8) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ticket_id, title, client_name, status, priority, updated_at
+            FROM tickets
+            ORDER BY datetime(updated_at) DESC, id DESC
+            LIMIT ?;
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_ticket_count_by_priority() -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(priority, 'Unspecified') AS label, COUNT(*) AS count
+            FROM tickets
+            GROUP BY COALESCE(priority, 'Unspecified')
+            ORDER BY count DESC, label ASC;
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_ticket_count_by_category() -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(category, 'Uncategorized') AS label, COUNT(*) AS count
+            FROM tickets
+            GROUP BY COALESCE(category, 'Uncategorized')
+            ORDER BY count DESC, label ASC;
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_upcoming_follow_ups(limit: int = 8) -> list[dict[str, Any]]:
+    today = datetime.now().strftime("%Y-%m-%d")
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT ticket_id, title, client_name, status, follow_up_date
+            FROM tickets
+            WHERE archived = 0
+              AND follow_up_date IS NOT NULL
+              AND trim(follow_up_date) <> ''
+              AND date(follow_up_date) >= date(?)
+            ORDER BY date(follow_up_date) ASC, id ASC
+            LIMIT ?;
+            """,
+            (today, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_last_backup_status() -> dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT backup_name, status, started_at, completed_at
+            FROM backup_logs
+            ORDER BY datetime(started_at) DESC, id DESC
+            LIMIT 1;
+            """
+        ).fetchone()
+
+    if row is None:
+        return {
+            "label": "No backups yet",
+            "status": "Placeholder",
+            "timestamp": "-",
+        }
+
+    completed = row["completed_at"] if row["completed_at"] else row["started_at"]
+    return {
+        "label": row["backup_name"] or "Backup job",
+        "status": row["status"] or "unknown",
+        "timestamp": completed or "-",
     }
 
 

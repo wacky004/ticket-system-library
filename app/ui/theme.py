@@ -234,4 +234,34 @@ def build_stylesheet(mode: ThemeMode = ThemeMode.DARK) -> str:
         border: 1px solid {palette['border']};
         border-radius: 8px;
     }}
+
+    QFrame#SummaryCard {{
+        background-color: {palette['surface']};
+        border: 1px solid {palette['border']};
+        border-radius: 10px;
+    }}
+
+    #SummaryCardLabel {{
+        color: {palette['muted']};
+        font-size: 10pt;
+    }}
+
+    #SummaryCardValue {{
+        color: {palette['text']};
+        font-size: 18pt;
+        font-weight: 700;
+    }}
+
+    #SectionTitle {{
+        color: {palette['text']};
+        font-size: 11pt;
+        font-weight: 600;
+    }}
+
+    QTableWidget#DashboardTable {{
+        background-color: {palette['surface']};
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+        gridline-color: {palette['border']};
+    }}
     """
