@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -20,12 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import APP_NAME
+from app.db.database import get_app_setting
 from app.ui.backups import BackupsPage
 from app.ui.pages import DashboardPage, PlaceholderPage
 from app.ui.reports import ReportsPage
 from app.ui.settings import SettingsPage
 from app.ui.tickets import NewTicketPage, TicketsPage
 from app.services.backup import create_backup, get_auto_backup_on_exit, get_configured_backup_root
+from app.ui.theme import ThemeMode, build_stylesheet
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class MainWindow(QMainWindow):
 
         self._nav_buttons[0].setChecked(True)
         self.stack.setCurrentIndex(0)
+        self._configure_shortcuts()
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -78,10 +82,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        brand = QLabel("Ticket Library")
+        company_name = get_app_setting("company_name") or "Ticket Library"
+        display_name = get_app_setting("display_name") or "Desktop"
+        brand = QLabel(company_name)
         brand.setObjectName("BrandLabel")
 
-        version = QLabel("Desktop")
+        version = QLabel(display_name)
         version.setObjectName("BrandSubLabel")
 
         layout.addWidget(brand)
@@ -100,7 +106,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
-        footer = QLabel("Phase 7 Exports")
+        footer = QLabel("Phase 9 Polish")
         footer.setObjectName("SidebarFooter")
         layout.addWidget(footer)
 
@@ -119,7 +125,7 @@ class MainWindow(QMainWindow):
         self.dashboard_page = DashboardPage()
         self.reports_page = ReportsPage()
         self.backups_page = BackupsPage()
-        self.settings_page = SettingsPage()
+        self.settings_page = SettingsPage(on_theme_changed=self._apply_theme)
 
         for item in NAV_ITEMS:
             if item.name == "Dashboard":
@@ -140,6 +146,11 @@ class MainWindow(QMainWindow):
         return stack
 
     def _set_page(self, index: int) -> None:
+        current_index = self.stack.currentIndex()
+        if current_index == 2 and index != 2:
+            if not self.new_ticket_page.confirm_leave():
+                return
+
         self.stack.setCurrentIndex(index)
         for button_index, button in enumerate(self._nav_buttons):
             button.setChecked(button_index == index)
@@ -160,7 +171,38 @@ class MainWindow(QMainWindow):
         self.reports_page.refresh_data()
         self.backups_page.refresh_data()
 
+    def _apply_theme(self, mode: str) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        theme = ThemeMode.LIGHT if str(mode).lower() == "light" else ThemeMode.DARK
+        app.setStyleSheet(build_stylesheet(theme))
+
+    def _configure_shortcuts(self) -> None:
+        shortcut_new = QShortcut(QKeySequence("Ctrl+N"), self)
+        shortcut_new.activated.connect(lambda: self._set_page(2))
+
+        shortcut_find = QShortcut(QKeySequence("Ctrl+F"), self)
+        shortcut_find.activated.connect(self._focus_ticket_search)
+
+        shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        shortcut_save.activated.connect(self._handle_save_shortcut)
+
+    def _focus_ticket_search(self) -> None:
+        self._set_page(1)
+        self.tickets_page.focus_search()
+
+    def _handle_save_shortcut(self) -> None:
+        current_name = NAV_ITEMS[self.stack.currentIndex()].name
+        if current_name == "New Ticket":
+            self.new_ticket_page.handle_save_shortcut()
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        if NAV_ITEMS[self.stack.currentIndex()].name == "New Ticket":
+            if not self.new_ticket_page.confirm_leave():
+                event.ignore()
+                return
+
         if get_auto_backup_on_exit() and get_configured_backup_root() is not None:
             try:
                 create_backup(backup_type="auto_exit")

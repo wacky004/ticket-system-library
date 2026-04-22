@@ -7,7 +7,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.config import APP_NAME
-from app.db.database import has_any_tickets, initialize_database
+from app.db.database import get_app_setting, has_any_tickets, initialize_database
 from app.services.backup import (
     backup_is_newer_than_local,
     get_configured_backup_root,
@@ -24,7 +24,9 @@ def run() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    app.setStyleSheet(build_stylesheet(ThemeMode.DARK))
+    theme_mode = (get_app_setting("theme_mode") or "dark").lower()
+    theme = ThemeMode.LIGHT if theme_mode == "light" else ThemeMode.DARK
+    app.setStyleSheet(build_stylesheet(theme))
 
     _handle_startup_backup_prompt()
 

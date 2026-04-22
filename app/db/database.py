@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS tickets (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     resolved_at TEXT,
-    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))
+    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+    starred INTEGER NOT NULL DEFAULT 0 CHECK (starred IN (0, 1)),
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS ticket_notes (
@@ -183,6 +185,9 @@ DEFAULT_SETTINGS = [
     ("export_directory", str(EXPORTS_DIR), "path"),
     ("onedrive_backup_path", "", "path"),
     ("auto_backup_on_exit", "0", "bool"),
+    ("ticket_id_prefix", "TKT", "string"),
+    ("display_name", "Support User", "string"),
+    ("company_name", "Ticket Library", "string"),
 ]
 
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -347,6 +352,8 @@ def search_tickets(filters: dict[str, Any] | None = None) -> list[dict[str, Any]
             t.description,
             t.follow_up_date,
             t.archived,
+            t.starred,
+            t.pinned,
             t.created_at,
             t.updated_at,
             t.resolved_at,
@@ -433,7 +440,7 @@ def search_tickets(filters: dict[str, Any] | None = None) -> list[dict[str, Any]
     if bool(active_filters.get("with_attachments_only", False)):
         query += " AND EXISTS(SELECT 1 FROM ticket_attachments ta2 WHERE ta2.ticket_id = t.id)"
 
-    query += " ORDER BY t.created_at DESC, t.id DESC;"
+    query += " ORDER BY t.pinned DESC, t.created_at DESC, t.id DESC;"
 
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -1175,7 +1182,80 @@ def reopen_ticket(db_id: int) -> None:
         conn.commit()
 
 
+def set_ticket_starred(db_id: int, starred: bool) -> None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT starred FROM tickets WHERE id = ?;", (db_id,)).fetchone()
+        if row is None:
+            raise ValueError("Ticket not found.")
+
+        new_value = 1 if starred else 0
+        conn.execute("UPDATE tickets SET starred = ?, updated_at = datetime('now') WHERE id = ?;", (new_value, db_id))
+        if int(row["starred"] or 0) != new_value:
+            conn.execute(
+                """
+                INSERT INTO ticket_history (ticket_id, field_name, old_value, new_value, changed_at)
+                VALUES (?, 'starred', ?, ?, datetime('now'));
+                """,
+                (db_id, _stringify(row["starred"]), _stringify(new_value)),
+            )
+        conn.commit()
+
+
+def set_ticket_pinned(db_id: int, pinned: bool) -> None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT pinned FROM tickets WHERE id = ?;", (db_id,)).fetchone()
+        if row is None:
+            raise ValueError("Ticket not found.")
+
+        new_value = 1 if pinned else 0
+        conn.execute("UPDATE tickets SET pinned = ?, updated_at = datetime('now') WHERE id = ?;", (new_value, db_id))
+        if int(row["pinned"] or 0) != new_value:
+            conn.execute(
+                """
+                INSERT INTO ticket_history (ticket_id, field_name, old_value, new_value, changed_at)
+                VALUES (?, 'pinned', ?, ?, datetime('now'));
+                """,
+                (db_id, _stringify(row["pinned"]), _stringify(new_value)),
+            )
+        conn.commit()
+
+
+def duplicate_ticket(db_id: int) -> int:
+    ticket = get_ticket_by_db_id(db_id)
+    if ticket is None:
+        raise ValueError("Ticket not found.")
+
+    payload = {
+        "title": f"{ticket.get('title') or 'Ticket'} (Copy)",
+        "client_name": ticket.get("client_name"),
+        "va_name": ticket.get("va_name"),
+        "category": ticket.get("category"),
+        "subcategory": ticket.get("subcategory"),
+        "priority": ticket.get("priority"),
+        "status": ticket.get("status") if ticket.get("status") else "Open",
+        "assigned_to": ticket.get("assigned_to"),
+        "source": ticket.get("source"),
+        "description": ticket.get("description"),
+        "troubleshooting": ticket.get("troubleshooting"),
+        "resolution": ticket.get("resolution"),
+        "next_action": ticket.get("next_action"),
+        "tags_text": ticket.get("tags_text"),
+        "follow_up_date": ticket.get("follow_up_date"),
+        "device_name": ticket.get("device_name"),
+        "software_tools": ticket.get("software_tools"),
+    }
+    return create_ticket(payload)
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
+    ticket_columns = _get_table_columns(conn, "tickets")
+    if "starred" not in ticket_columns:
+        conn.execute("ALTER TABLE tickets ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;")
+    if "pinned" not in ticket_columns:
+        conn.execute("ALTER TABLE tickets ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tickets_starred ON tickets(starred);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tickets_pinned ON tickets(pinned);")
+
     note_columns = _get_table_columns(conn, "ticket_notes")
     if "note_type" not in note_columns:
         conn.execute("ALTER TABLE ticket_notes ADD COLUMN note_type TEXT;")
@@ -1326,22 +1406,39 @@ def _get_csv_setting(setting_key: str, fallback: list[str]) -> list[str]:
     return parsed or fallback
 
 
+def _get_ticket_id_prefix(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT setting_value FROM app_settings WHERE setting_key = 'ticket_id_prefix';"
+    ).fetchone()
+    raw = str(row["setting_value"]).strip().upper() if row and row["setting_value"] else "TKT"
+    cleaned = "".join(ch for ch in raw if ch.isalnum())
+    return cleaned[:10] or "TKT"
+
+
 def _generate_next_ticket_id(conn: sqlite3.Connection) -> str:
     year = datetime.now().year
-    prefix = f"TKT-{year}-"
+    id_prefix = _get_ticket_id_prefix(conn)
+    full_prefix = f"{id_prefix}-{year}-"
 
-    row = conn.execute(
-        """
-        SELECT MAX(CAST(SUBSTR(ticket_id, 10) AS INTEGER)) AS max_seq
-        FROM tickets
-        WHERE ticket_id LIKE ?;
-        """,
-        (f"{prefix}%",),
-    ).fetchone()
+    rows = conn.execute(
+        "SELECT ticket_id FROM tickets WHERE ticket_id LIKE ?;",
+        (f"{full_prefix}%",),
+    ).fetchall()
 
-    max_seq = int(row["max_seq"] or 0) if row else 0
+    max_seq = 0
+    for row in rows:
+        ticket_id = str(row["ticket_id"])
+        parts = ticket_id.split("-")
+        if len(parts) < 3:
+            continue
+        try:
+            seq = int(parts[-1])
+        except ValueError:
+            continue
+        max_seq = max(max_seq, seq)
+
     next_seq = max_seq + 1
-    return f"{prefix}{next_seq:06d}"
+    return f"{full_prefix}{next_seq:06d}"
 
 
 def _validate_ticket_payload(values: dict[str, Any]) -> dict[str, str | None]:

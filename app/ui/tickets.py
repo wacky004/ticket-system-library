@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QDate, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -44,6 +44,7 @@ from app.db.database import (
     archive_ticket,
     create_ticket,
     delete_ticket,
+    duplicate_ticket,
     generate_next_ticket_id,
     get_default_priorities,
     get_default_statuses,
@@ -57,6 +58,8 @@ from app.db.database import (
     list_subcategories,
     list_ticket_attachments,
     remove_ticket_attachment,
+    set_ticket_pinned,
+    set_ticket_starred,
     reopen_ticket,
     search_tickets,
     update_ticket,
@@ -334,13 +337,23 @@ class NewTicketPage(QWidget):
         self.save_button.clicked.connect(self._handle_save)
 
         self.refresh_ticket_preview()
+        self._baseline_payload = self.form.get_payload().copy()
 
     def refresh_ticket_preview(self) -> None:
         self.form.set_ticket_preview(generate_next_ticket_id())
 
     def _handle_cancel(self) -> None:
+        if self.form.get_payload() != self._baseline_payload:
+            confirm = QMessageBox.question(
+                self,
+                "Discard Changes",
+                "You have unsaved changes. Discard them?",
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
         self.form.clear_form()
         self.refresh_ticket_preview()
+        self._baseline_payload = self.form.get_payload().copy()
 
     def _handle_save(self) -> None:
         try:
@@ -358,9 +371,23 @@ class NewTicketPage(QWidget):
 
         self.form.clear_form()
         self.refresh_ticket_preview()
+        self._baseline_payload = self.form.get_payload().copy()
 
         if self._on_ticket_saved:
             self._on_ticket_saved()
+
+    def confirm_leave(self) -> bool:
+        if self.form.get_payload() == self._baseline_payload:
+            return True
+        confirm = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "You have unsaved changes in New Ticket. Leave without saving?",
+        )
+        return confirm == QMessageBox.StandardButton.Yes
+
+    def handle_save_shortcut(self) -> None:
+        self._handle_save()
 
 
 class AttachmentListWidget(QListWidget):
@@ -886,10 +913,13 @@ class TicketDetailDialog(QDialog):
         layout.addWidget(self.tabs, 1)
         layout.addLayout(actions)
 
-        cancel_button.clicked.connect(self.reject)
+        cancel_button.clicked.connect(self._cancel)
         save_button.clicked.connect(self._save)
+        self._save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        self._save_shortcut.activated.connect(self._save)
 
         self._load_ticket()
+        self._baseline_payload = self.form.get_payload().copy()
 
     def _load_ticket(self) -> None:
         ticket = get_ticket_by_db_id(self.ticket_db_id)
@@ -924,7 +954,30 @@ class TicketDetailDialog(QDialog):
             return
 
         QMessageBox.information(self, "Success", "Ticket updated successfully.")
+        self._baseline_payload = self.form.get_payload().copy()
         self.accept()
+
+    def _cancel(self) -> None:
+        if self.form.get_payload() != self._baseline_payload:
+            confirm = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                "You have unsaved changes. Close without saving?",
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        super().reject()
+
+    def reject(self) -> None:
+        if hasattr(self, "_baseline_payload") and self.form.get_payload() != self._baseline_payload:
+            confirm = QMessageBox.question(
+                self,
+                "Unsaved Changes",
+                "You have unsaved changes. Close without saving?",
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        super().reject()
 
 
 class TicketsPage(QWidget):
@@ -932,6 +985,8 @@ class TicketsPage(QWidget):
 
     TABLE_COLUMNS = [
         "ID",
+        "Star",
+        "Pin",
         "Ticket ID",
         "Title",
         "Client",
@@ -1028,6 +1083,12 @@ class TicketsPage(QWidget):
         self.new_button.setObjectName("PrimaryButton")
         self.open_button = QPushButton("Open/Edit")
         self.open_button.setObjectName("SecondaryButton")
+        self.star_button = QPushButton("Toggle Star")
+        self.star_button.setObjectName("SecondaryButton")
+        self.pin_button = QPushButton("Toggle Pin")
+        self.pin_button.setObjectName("SecondaryButton")
+        self.duplicate_button = QPushButton("Duplicate")
+        self.duplicate_button.setObjectName("SecondaryButton")
         self.archive_button = QPushButton("Archive")
         self.archive_button.setObjectName("SecondaryButton")
         self.reopen_button = QPushButton("Reopen")
@@ -1093,6 +1154,9 @@ class TicketsPage(QWidget):
         actions_layout.setSpacing(8)
         actions_layout.addWidget(self.new_button)
         actions_layout.addWidget(self.open_button)
+        actions_layout.addWidget(self.star_button)
+        actions_layout.addWidget(self.pin_button)
+        actions_layout.addWidget(self.duplicate_button)
         actions_layout.addWidget(self.archive_button)
         actions_layout.addWidget(self.reopen_button)
         actions_layout.addWidget(self.delete_button)
@@ -1122,6 +1186,9 @@ class TicketsPage(QWidget):
 
         self.new_button.clicked.connect(self._handle_new_ticket)
         self.open_button.clicked.connect(self.open_selected_ticket)
+        self.star_button.clicked.connect(self.toggle_selected_starred)
+        self.pin_button.clicked.connect(self.toggle_selected_pinned)
+        self.duplicate_button.clicked.connect(self.duplicate_selected_ticket)
         self.archive_button.clicked.connect(self.archive_selected_ticket)
         self.reopen_button.clicked.connect(self.reopen_selected_ticket)
         self.delete_button.clicked.connect(self.delete_selected_ticket)
@@ -1188,6 +1255,8 @@ class TicketsPage(QWidget):
             self.table.insertRow(row_index)
             values = [
                 str(ticket.get("id") or ""),
+                "★" if int(ticket.get("starred") or 0) else "",
+                "📌" if int(ticket.get("pinned") or 0) else "",
                 str(ticket.get("ticket_id") or ""),
                 str(ticket.get("title") or ""),
                 str(ticket.get("client_name") or ""),
@@ -1265,6 +1334,44 @@ class TicketsPage(QWidget):
         self.status_filter.setCurrentIndex(0)
         self.archived_only_check.setChecked(True)
         self.reload_table()
+
+    def focus_search(self) -> None:
+        self.search_input.setFocus()
+        self.search_input.selectAll()
+
+    def toggle_selected_starred(self) -> None:
+        ticket = self._selected_ticket()
+        if ticket is None:
+            QMessageBox.information(self, "No Selection", "Select a ticket first.")
+            return
+        new_state = not bool(int(ticket.get("starred") or 0))
+        set_ticket_starred(int(ticket["id"]), new_state)
+        QMessageBox.information(self, "Updated", "Ticket star updated.")
+        self._after_data_change()
+
+    def toggle_selected_pinned(self) -> None:
+        ticket = self._selected_ticket()
+        if ticket is None:
+            QMessageBox.information(self, "No Selection", "Select a ticket first.")
+            return
+        new_state = not bool(int(ticket.get("pinned") or 0))
+        set_ticket_pinned(int(ticket["id"]), new_state)
+        QMessageBox.information(self, "Updated", "Ticket pin updated.")
+        self._after_data_change()
+
+    def duplicate_selected_ticket(self) -> None:
+        ticket = self._selected_ticket()
+        if ticket is None:
+            QMessageBox.information(self, "No Selection", "Select a ticket first.")
+            return
+        new_id = duplicate_ticket(int(ticket["id"]))
+        new_ticket = get_ticket_by_db_id(new_id)
+        QMessageBox.information(
+            self,
+            "Ticket Duplicated",
+            f"Created {new_ticket.get('ticket_id') if new_ticket else new_id}.",
+        )
+        self._after_data_change()
 
     def set_export_directory_ui(self) -> None:
         current = self.export_dir_input.text().strip() or get_export_directory()
