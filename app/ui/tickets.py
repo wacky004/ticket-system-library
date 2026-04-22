@@ -1,26 +1,34 @@
-"""Ticket management UI for Phase 2/3 CRUD and browser features."""
+"""Ticket management UI with CRUD, browsing, and attachment features."""
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -29,6 +37,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.db.database import (
+    ALLOWED_ATTACHMENT_EXTENSIONS,
+    add_ticket_attachment,
     archive_ticket,
     create_ticket,
     delete_ticket,
@@ -39,6 +49,8 @@ from app.db.database import (
     get_ticket_filter_options,
     list_categories,
     list_subcategories,
+    list_ticket_attachments,
+    remove_ticket_attachment,
     reopen_ticket,
     search_tickets,
     update_ticket,
@@ -344,6 +356,308 @@ class NewTicketPage(QWidget):
             self._on_ticket_saved()
 
 
+class AttachmentListWidget(QListWidget):
+    """List widget that supports drag-and-drop image files."""
+
+    files_dropped = Signal(list)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self.setViewMode(QListWidget.ViewMode.IconMode)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.setIconSize(QSize(120, 120))
+        self.setSpacing(10)
+        self.setWordWrap(True)
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # type: ignore[override]
+        if not event.mimeData().hasUrls():
+            super().dropEvent(event)
+            return
+
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.files_dropped.emit(paths)
+        event.acceptProposedAction()
+
+
+class AttachmentPreviewDialog(QDialog):
+    """Full-size image preview dialog for an attachment."""
+
+    def __init__(self, attachment: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(str(attachment.get("filename") or "Attachment Preview"))
+        self.setMinimumSize(900, 650)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setObjectName("AttachmentPreview")
+        layout.addWidget(self.image_label, 1)
+
+        close_button = QPushButton("Close")
+        close_button.setObjectName("SecondaryButton")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+        file_path = Path(str(attachment.get("file_path") or ""))
+        pixmap = QPixmap(str(file_path))
+        if not file_path.exists() or pixmap.isNull():
+            self.image_label.setText("Image file is missing or unreadable.")
+            return
+
+        self._raw_pixmap = pixmap
+        self._refresh_image()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if hasattr(self, "_raw_pixmap"):
+            self._refresh_image()
+
+    def _refresh_image(self) -> None:
+        scaled = self._raw_pixmap.scaled(
+            self.image_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setPixmap(scaled)
+
+
+class AttachmentPanel(QWidget):
+    """Attachment management tab for a ticket."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ticket_db_id: int | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(10)
+
+        subtitle = QLabel(
+            "Attach PNG, JPG, JPEG, or WEBP images. You can add multiple files, drag-drop images, or paste from clipboard."
+        )
+        subtitle.setObjectName("PageSubtitle")
+
+        self.note_input = QLineEdit()
+        self.note_input.setPlaceholderText("Optional note/label for newly added images")
+
+        self.list_widget = AttachmentListWidget()
+        self.list_widget.setObjectName("AttachmentList")
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+
+        self.add_button = QPushButton("Add Images")
+        self.add_button.setObjectName("PrimaryButton")
+        self.paste_button = QPushButton("Paste Image")
+        self.paste_button.setObjectName("SecondaryButton")
+        self.preview_button = QPushButton("Open Preview")
+        self.preview_button.setObjectName("SecondaryButton")
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.setObjectName("DangerButton")
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setObjectName("SecondaryButton")
+
+        actions.addWidget(self.add_button)
+        actions.addWidget(self.paste_button)
+        actions.addWidget(self.preview_button)
+        actions.addWidget(self.remove_button)
+        actions.addStretch(1)
+        actions.addWidget(self.refresh_button)
+
+        self.status_label = QLabel("0 attachments")
+        self.status_label.setObjectName("MetaLabel")
+
+        root.addWidget(subtitle)
+        root.addWidget(self.note_input)
+        root.addLayout(actions)
+        root.addWidget(self.list_widget, 1)
+        root.addWidget(self.status_label)
+
+        self.add_button.clicked.connect(self.add_images_via_dialog)
+        self.paste_button.clicked.connect(self.add_image_from_clipboard)
+        self.preview_button.clicked.connect(self.open_selected_attachment)
+        self.remove_button.clicked.connect(self.remove_selected_attachment)
+        self.refresh_button.clicked.connect(self.reload)
+        self.list_widget.itemDoubleClicked.connect(lambda _item: self.open_selected_attachment())
+        self.list_widget.files_dropped.connect(self._add_files)
+
+    def set_ticket(self, ticket_db_id: int) -> None:
+        self.ticket_db_id = ticket_db_id
+        self.reload()
+
+    def reload(self) -> None:
+        self.list_widget.clear()
+
+        if self.ticket_db_id is None:
+            self.status_label.setText("No ticket selected")
+            return
+
+        attachments = list_ticket_attachments(self.ticket_db_id)
+        for attachment in attachments:
+            self._add_attachment_item(attachment)
+        self.status_label.setText(f"{len(attachments)} attachments")
+
+    def _add_attachment_item(self, attachment: dict[str, Any]) -> None:
+        file_name = str(attachment.get("filename") or "unnamed")
+        note = str(attachment.get("note_label") or "")
+        added_at = str(attachment.get("added_at") or "")
+        file_path = Path(str(attachment.get("file_path") or ""))
+
+        label_lines = [file_name]
+        if note:
+            label_lines.append(note)
+        if added_at:
+            label_lines.append(added_at)
+        label = "\n".join(label_lines)
+
+        item = QListWidgetItem(label)
+        item.setData(Qt.ItemDataRole.UserRole, attachment)
+        item.setToolTip(str(file_path))
+
+        icon_pixmap = self._build_thumbnail(file_path)
+        item.setIcon(QIcon(icon_pixmap))
+        self.list_widget.addItem(item)
+
+    def _build_thumbnail(self, file_path: Path) -> QPixmap:
+        if file_path.exists():
+            image = QPixmap(str(file_path))
+            if not image.isNull():
+                return image.scaled(
+                    120,
+                    120,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+
+        placeholder = QPixmap(120, 120)
+        placeholder.fill(Qt.GlobalColor.darkGray)
+        return placeholder
+
+    def add_images_via_dialog(self) -> None:
+        if self.ticket_db_id is None:
+            return
+
+        pattern = "Images (*.png *.jpg *.jpeg *.webp)"
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Select images", "", pattern)
+        if not file_paths:
+            return
+        self._add_files(file_paths)
+
+    def _add_files(self, file_paths: list[str]) -> None:
+        if self.ticket_db_id is None:
+            return
+
+        note = self.note_input.text().strip() or None
+        added_count = 0
+        errors: list[str] = []
+        for path in file_paths:
+            source = Path(path)
+            if source.suffix.lower() not in ALLOWED_ATTACHMENT_EXTENSIONS:
+                errors.append(f"{source.name}: unsupported format")
+                continue
+
+            try:
+                add_ticket_attachment(self.ticket_db_id, source, note)
+                added_count += 1
+            except Exception as exc:
+                errors.append(f"{source.name}: {exc}")
+
+        self.reload()
+        if added_count:
+            QMessageBox.information(self, "Success", f"Added {added_count} attachment(s).")
+        if errors:
+            QMessageBox.warning(self, "Some Files Skipped", "\n".join(errors))
+
+    def add_image_from_clipboard(self) -> None:
+        if self.ticket_db_id is None:
+            return
+
+        clipboard = QApplication.clipboard()
+        image = clipboard.image()
+        if image.isNull():
+            QMessageBox.information(self, "Clipboard Empty", "Clipboard does not contain an image.")
+            return
+
+        note = self.note_input.text().strip() or None
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                temp_path = Path(tmp.name)
+            image.save(str(temp_path), "PNG")
+            add_ticket_attachment(self.ticket_db_id, temp_path, note)
+        except Exception as exc:
+            QMessageBox.critical(self, "Paste Failed", f"Unable to attach clipboard image.\n\n{exc}")
+            return
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+        self.reload()
+        QMessageBox.information(self, "Success", "Image pasted and attached.")
+
+    def selected_attachment(self) -> dict[str, Any] | None:
+        item = self.list_widget.currentItem()
+        if item is None:
+            return None
+        data = item.data(Qt.ItemDataRole.UserRole)
+        return dict(data) if isinstance(data, dict) else None
+
+    def open_selected_attachment(self) -> None:
+        attachment = self.selected_attachment()
+        if attachment is None:
+            QMessageBox.information(self, "No Selection", "Select an attachment first.")
+            return
+
+        file_path = Path(str(attachment.get("file_path") or ""))
+        if not file_path.exists():
+            QMessageBox.warning(self, "Missing File", "Attachment file is missing from disk.")
+            return
+
+        dialog = AttachmentPreviewDialog(attachment, self)
+        dialog.exec()
+
+    def remove_selected_attachment(self) -> None:
+        attachment = self.selected_attachment()
+        if attachment is None:
+            QMessageBox.information(self, "No Selection", "Select an attachment first.")
+            return
+
+        file_name = str(attachment.get("filename") or "attachment")
+        prompt = QMessageBox.question(
+            self,
+            "Confirm Remove",
+            f"Remove attachment {file_name}?",
+        )
+        if prompt != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            remove_ticket_attachment(int(attachment["id"]))
+        except Exception as exc:
+            QMessageBox.critical(self, "Remove Failed", f"Unable to remove attachment.\n\n{exc}")
+            return
+
+        self.reload()
+        QMessageBox.information(self, "Success", "Attachment removed.")
+
+
 class TicketDetailDialog(QDialog):
     """Dialog for viewing/editing an existing ticket."""
 
@@ -351,7 +665,7 @@ class TicketDetailDialog(QDialog):
         super().__init__(parent)
         self.ticket_db_id = ticket_db_id
         self.setWindowTitle("Ticket Details")
-        self.setMinimumSize(860, 740)
+        self.setMinimumSize(980, 760)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -360,7 +674,23 @@ class TicketDetailDialog(QDialog):
         self.meta_label = QLabel("")
         self.meta_label.setObjectName("MetaLabel")
 
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("TicketTabs")
+
+        details_tab = QWidget()
+        details_layout = QVBoxLayout(details_tab)
+        details_layout.setContentsMargins(8, 8, 8, 8)
         self.form = TicketFormWidget()
+        details_layout.addWidget(self.form)
+
+        attachments_tab = QWidget()
+        attachments_layout = QVBoxLayout(attachments_tab)
+        attachments_layout.setContentsMargins(8, 8, 8, 8)
+        self.attachment_panel = AttachmentPanel()
+        attachments_layout.addWidget(self.attachment_panel)
+
+        self.tabs.addTab(details_tab, "Details")
+        self.tabs.addTab(attachments_tab, "Attachments")
 
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -374,7 +704,7 @@ class TicketDetailDialog(QDialog):
         actions.addWidget(save_button)
 
         layout.addWidget(self.meta_label)
-        layout.addWidget(self.form, 1)
+        layout.addWidget(self.tabs, 1)
         layout.addLayout(actions)
 
         cancel_button.clicked.connect(self.reject)
@@ -390,6 +720,7 @@ class TicketDetailDialog(QDialog):
             return
 
         self.form.load_ticket(ticket)
+        self.attachment_panel.set_ticket(self.ticket_db_id)
         self._refresh_meta(ticket)
 
     def _refresh_meta(self, ticket: dict[str, Any]) -> None:
@@ -521,7 +852,6 @@ class TicketsPage(QWidget):
         self.refresh_button.setObjectName("SecondaryButton")
 
         controls_layout.addWidget(self.search_input, 0, 0, 1, 6)
-
         controls_layout.addWidget(QLabel("Status"), 1, 0)
         controls_layout.addWidget(self.status_filter, 1, 1)
         controls_layout.addWidget(QLabel("Priority"), 1, 2)

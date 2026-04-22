@@ -21,6 +21,7 @@ env/
 /data/*.db
 /data/*.sqlite
 /data/*.sqlite3
+/media/attachments/
 
 # OS files
 .DS_Store

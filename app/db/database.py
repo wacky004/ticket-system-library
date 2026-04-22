@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import mimetypes
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Iterator
+from uuid import uuid4
 
-from app.config import DB_PATH, DATA_DIR
+from app.config import ATTACHMENTS_DIR, DB_PATH, DATA_DIR
 
 
 SCHEMA_SQL = """
@@ -52,10 +56,13 @@ CREATE TABLE IF NOT EXISTS ticket_attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_id INTEGER NOT NULL,
     file_name TEXT NOT NULL,
+    filename TEXT,
     file_path TEXT NOT NULL,
+    note_label TEXT,
     mime_type TEXT,
     file_size INTEGER,
     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+    added_at TEXT,
     FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
 );
 
@@ -170,6 +177,8 @@ DEFAULT_SETTINGS = [
     ("theme_mode", "dark", "string"),
 ]
 
+ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+
 SAMPLE_TICKETS = [
     {
         "title": "VPN client fails to connect",
@@ -246,9 +255,11 @@ def get_connection() -> Iterator[sqlite3.Connection]:
 def initialize_database() -> None:
     """Create database file, schema, and defaults."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
     with get_connection() as conn:
         conn.executescript(SCHEMA_SQL)
+        _migrate_schema(conn)
         _seed_defaults(conn)
         _seed_sample_tickets(conn)
         conn.commit()
@@ -448,6 +459,95 @@ def get_ticket_by_db_id(db_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def list_ticket_attachments(ticket_db_id: int) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                ticket_id,
+                COALESCE(filename, file_name) AS filename,
+                file_path,
+                COALESCE(added_at, uploaded_at) AS added_at,
+                note_label
+            FROM ticket_attachments
+            WHERE ticket_id = ?
+            ORDER BY id DESC;
+            """,
+            (ticket_db_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_ticket_attachment(ticket_db_id: int, source_path: str | Path, note_label: str | None = None) -> int:
+    source = Path(source_path)
+    if not source.exists() or not source.is_file():
+        raise ValueError("Attachment file was not found.")
+
+    extension = source.suffix.lower()
+    if extension not in ALLOWED_ATTACHMENT_EXTENSIONS:
+        raise ValueError("Unsupported image format. Use PNG, JPG, JPEG, or WEBP.")
+
+    safe_stem = _sanitize_file_name(source.stem)
+    unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}_{safe_stem}{extension}"
+
+    ticket_dir = ATTACHMENTS_DIR / str(ticket_db_id)
+    ticket_dir.mkdir(parents=True, exist_ok=True)
+    destination = ticket_dir / unique_name
+
+    shutil.copy2(source, destination)
+
+    mime_type, _ = mimetypes.guess_type(destination.name)
+    file_size = destination.stat().st_size
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    normalized_note = _normalize(note_label)
+
+    with get_connection() as conn:
+        ticket_exists = conn.execute("SELECT 1 FROM tickets WHERE id = ?;", (ticket_db_id,)).fetchone()
+        if ticket_exists is None:
+            destination.unlink(missing_ok=True)
+            raise ValueError("Ticket not found.")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO ticket_attachments (
+                ticket_id, file_name, filename, file_path, note_label,
+                mime_type, file_size, uploaded_at, added_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                ticket_db_id,
+                source.name,
+                source.name,
+                str(destination),
+                normalized_note,
+                mime_type,
+                file_size,
+                now_text,
+                now_text,
+            ),
+        )
+        conn.commit()
+    return int(cursor.lastrowid)
+
+
+def remove_ticket_attachment(attachment_id: int) -> None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT file_path FROM ticket_attachments WHERE id = ?;",
+            (attachment_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Attachment not found.")
+
+        conn.execute("DELETE FROM ticket_attachments WHERE id = ?;", (attachment_id,))
+        conn.commit()
+
+    file_path = Path(str(row["file_path"]))
+    file_path.unlink(missing_ok=True)
+
+
 def create_ticket(values: dict[str, Any]) -> int:
     payload = _validate_ticket_payload(values)
 
@@ -557,8 +657,15 @@ def update_ticket(db_id: int, values: dict[str, Any]) -> None:
 
 def delete_ticket(db_id: int) -> None:
     with get_connection() as conn:
+        attachment_rows = conn.execute(
+            "SELECT file_path FROM ticket_attachments WHERE ticket_id = ?;",
+            (db_id,),
+        ).fetchall()
         conn.execute("DELETE FROM tickets WHERE id = ?;", (db_id,))
         conn.commit()
+
+    for row in attachment_rows:
+        Path(str(row["file_path"])).unlink(missing_ok=True)
 
 
 def archive_ticket(db_id: int) -> None:
@@ -584,6 +691,39 @@ def reopen_ticket(db_id: int) -> None:
             (db_id,),
         )
         conn.commit()
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    attachment_columns = _get_table_columns(conn, "ticket_attachments")
+
+    if "filename" not in attachment_columns:
+        conn.execute("ALTER TABLE ticket_attachments ADD COLUMN filename TEXT;")
+
+    if "note_label" not in attachment_columns:
+        conn.execute("ALTER TABLE ticket_attachments ADD COLUMN note_label TEXT;")
+
+    if "added_at" not in attachment_columns:
+        conn.execute("ALTER TABLE ticket_attachments ADD COLUMN added_at TEXT;")
+
+    conn.execute(
+        """
+        UPDATE ticket_attachments
+        SET filename = file_name
+        WHERE filename IS NULL OR trim(filename) = '';
+        """
+    )
+    conn.execute(
+        """
+        UPDATE ticket_attachments
+        SET added_at = uploaded_at
+        WHERE added_at IS NULL OR trim(added_at) = '';
+        """
+    )
+
+
+def _get_table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name});").fetchall()
+    return {str(row["name"]) for row in rows}
 
 
 def _seed_defaults(conn: sqlite3.Connection) -> None:
@@ -740,6 +880,11 @@ def _normalize(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _sanitize_file_name(value: str) -> str:
+    cleaned = "".join(ch for ch in value if ch.isalnum() or ch in {"-", "_"})
+    return cleaned[:80] or "image"
 
 
 def _derive_resolved_at(status: str | None, current_resolved_at: Any = None) -> str | None:

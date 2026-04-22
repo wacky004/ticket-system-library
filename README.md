@@ -1,23 +1,38 @@
-﻿# Ticket Library Desktop (Phase 3)
+﻿# Ticket Library Desktop (Phase 4)
 
 Ticket Library Desktop is an offline-first Windows desktop application built with Python and PySide6.
 
-Phase 3 delivers full ticket CRUD plus ticket browsing/search/filter/sort for historical tickets.
+Phase 4 adds image attachment management to tickets using local file storage (not database blobs).
 
 ## Features Implemented
 - Modern desktop shell with sidebar navigation
-- New Ticket form with validation
+- Full ticket CRUD and browser/search/filter/sort
 - Auto-generated Ticket ID format: `TKT-YYYY-000001`
-- Ticket list table with full detail open/edit
-- Delete with confirmation
-- Archive and Reopen flows
+- Ticket detail editor with dedicated **Attachments** tab
+- Attach multiple images per ticket (`PNG`, `JPG`, `JPEG`, `WEBP`)
+- Thumbnail previews and full-size preview dialog
+- Remove attachment with confirmation
+- Graceful handling of missing attachment files
+- Drag-and-drop image attach support
+- Paste image from clipboard support
 - Automatic timestamps (`created_at`, `updated_at`, `resolved_at` rules)
 - SQLite schema initialization + seed defaults + sample tickets
-- Global ticket search (ticket ID, title, client, VA, category, priority, status, assigned tech, tags, description)
-- Filter panel (date range, status, priority, category, client, VA, archived-only, attachments-only)
-- Quick filters: Open, In Progress, Pending, Resolved, Archived
-- Sortable ticket browser table
 - SQLite indexes for faster ticket browsing/search paths
+
+## Attachment Storage Design
+- Files are stored locally under: `media/attachments/<ticket_db_id>/`
+- SQLite stores attachment references and metadata in `ticket_attachments`
+- No blob storage is used
+
+### Attachment Record Fields
+- `id`
+- `ticket_id`
+- `filename`
+- `file_path`
+- `added_at`
+- `note_label`
+
+(Compatibility columns from earlier phases are still supported.)
 
 ## Tech Stack
 - Python 3.11+ (recommended: 3.11-3.13 for current PySide6 wheel compatibility)
@@ -44,35 +59,11 @@ Ticket Library Desktop/
 |     |- pages.py
 |     |- theme.py
 |     `- tickets.py
-`- data/
-   `- ticket_library.db (auto-created on first run)
+|- data/
+|  `- ticket_library.db
+`- media/
+   `- attachments/
 ```
-
-## Navigation
-- Dashboard (placeholder)
-- Tickets (CRUD + browser/search/filter)
-- New Ticket (full form)
-- Reports (placeholder)
-- Backups (placeholder)
-- Settings (placeholder)
-
-## Core Tables
-- `tickets`
-- `ticket_notes`
-- `ticket_attachments`
-- `ticket_history`
-- `categories`
-- `subcategories`
-- `tags`
-- `ticket_tags`
-- `app_settings`
-- `backup_logs`
-
-## Seed Data
-- Default statuses (`app_settings`): Open, In Progress, Waiting on Client, Resolved, Closed
-- Default priorities (`app_settings`): Low, Medium, High, Urgent
-- Default categories + subcategories
-- Sample tickets for immediate testing
 
 ## Run Instructions (Windows PowerShell)
 ```powershell

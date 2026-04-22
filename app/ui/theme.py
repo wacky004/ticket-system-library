@@ -198,4 +198,40 @@ def build_stylesheet(mode: ThemeMode = ThemeMode.DARK) -> str:
         color: {palette['muted']};
         font-size: 9.5pt;
     }}
+
+    QTabWidget::pane {{
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+        top: -1px;
+        background-color: {palette['bg']};
+    }}
+
+    QTabBar::tab {{
+        background-color: {palette['surface_2']};
+        border: 1px solid {palette['border']};
+        border-bottom: 0;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+        padding: 8px 14px;
+        margin-right: 4px;
+        color: {palette['text']};
+    }}
+
+    QTabBar::tab:selected {{
+        background-color: {palette['surface']};
+        border-color: {palette['accent']};
+    }}
+
+    QListWidget#AttachmentList {{
+        background-color: {palette['surface']};
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+        padding: 8px;
+    }}
+
+    QLabel#AttachmentPreview {{
+        background-color: {palette['surface']};
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+    }}
     """
